@@ -264,6 +264,7 @@ class TransformerLM(nn.Module):
         )
         self.norm = spec.norm_cls(d_model)
         self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
+        self.apply(self._init_weights)
         self.lm_head.weight = self.token_emb.weight
 
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
@@ -279,6 +280,13 @@ class TransformerLM(nn.Module):
             x = block(x)
         x = self.norm(x)
         return self.lm_head(x)
+
+    @staticmethod
+    def _init_weights(module: nn.Module) -> None:
+        if isinstance(module, (nn.Linear, nn.Embedding)):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if isinstance(module, nn.Linear) and module.bias is not None:
+                nn.init.zeros_(module.bias)
 
 
 def build_model(
