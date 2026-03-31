@@ -2,24 +2,29 @@
 
 ## Summary
 
-This project will be a standalone repository for implementing and benchmarking a recent Transformer-architecture variation on a compact causal language modeling task.
+This project will be a standalone repository for implementing and benchmarking a recent Transformer-architecture variation on causal language modeling.
 
 The primary architecture will be **Differential Transformer** from arXiv:2410.05258, "Differential Transformer," submitted on October 7, 2024 and revised on April 7, 2025. It was accepted as an oral presentation at ICLR 2025. We will implement the paper's core differential-attention idea directly in PyTorch rather than wrapping a third-party pretrained model.
 
-The benchmark will target **compact causal language modeling** on **WikiText-2** using a **word-level vocabulary** and a shared training harness. The initial comparison set will include:
+The benchmark will target **WikiText-2** with a shared training harness and two presets:
+
+- a fast **compact** smoke-test preset
+- a more meaningful **10-minute** preset aimed at producing more interpretable model behavior
+
+The initial comparison set will include:
 
 - a GPT-style causal Transformer
 - a LLaMA-style causal Transformer with RoPE, RMSNorm, and SwiGLU
 - a Differential Transformer using the same overall decoder layout
 
-The goal is a clean, reproducible relative comparison under local resource constraints, not a paper-scale reproduction.
+The goal is a clean, reproducible relative comparison under local resource constraints, not a paper-scale reproduction. The more meaningful preset should still remain laptop-friendly and CPU-runnable.
 
 ## Goals
 
 - Create a separate Git repository at `/Users/dmko/IdeaProjects/eeg/transformer-clm-bench`
 - Implement Differential Transformer in PyTorch for causal language modeling
 - Implement at least two strong Transformer baselines in the same codebase
-- Train and evaluate all models under the same compact benchmark configuration
+- Train and evaluate all models under the same benchmark harness with both smoke-test and more meaningful presets
 - Produce reproducible metrics and a short benchmark report
 
 ## Non-Goals
@@ -117,20 +122,21 @@ Dataset choice:
 
 - **WikiText-2**
 
-Tokenization choice:
+Tokenization choices:
 
-- **word-level vocabulary**
+- **compact preset:** word-level vocabulary for fast smoke testing
+- **meaningful preset:** byte-level tokenization for more informative modeling behavior
 
 Pipeline:
 
 1. Load raw `train`, `validation`, and `test` text splits
-2. Normalize and tokenize text into word-level tokens
-3. Build a vocabulary from training data with special tokens
+2. Normalize and tokenize text according to the chosen preset
+3. Build the preset-specific vocabulary representation with special tokens
 4. Encode each split into contiguous token streams
 5. Slice streams into fixed-length causal language modeling sequences
 6. Form autoregressive inputs and targets by shifting by one token
 
-The word-level approach is intentionally simple. It reduces external dependencies and keeps the benchmark compact and easy to inspect.
+The compact preset remains intentionally simple. The meaningful preset switches to byte-level tokenization so generation samples become readable and perplexity is less distorted by `<unk>` collapse.
 
 ## Training Flow
 
@@ -156,12 +162,37 @@ Training loop:
 
 ## Benchmarking Plan
 
-The first benchmark preset will be intentionally compact:
+The repository will expose two benchmark presets.
+
+### Preset 1: Compact
+
+Purpose:
+
+- fast smoke testing
+- rapid implementation verification
+
+Characteristics:
 
 - small decoder sizes
-- matched depth and width budgets
-- one local-machine-friendly sequence length
-- one reproducible training preset
+- minimal training budget
+- local-machine-friendly sequence length
+- intentionally fast runtime
+
+### Preset 2: Meaningful
+
+Purpose:
+
+- more informative relative comparison under a roughly 10-minute runtime budget
+- readable generation samples
+- less degenerate perplexity behavior
+
+Characteristics:
+
+- byte-level tokenization
+- slightly larger training budget
+- slightly larger model width and/or more steps than compact
+- still matched across all three architectures
+- still CPU-runnable on a local machine
 
 Reported metrics:
 
@@ -173,8 +204,9 @@ Reported metrics:
 
 Outputs:
 
-- machine-readable summary file in `results/`
-- human-readable markdown report in `results/`
+- separate machine-readable summary files in `results/` per preset
+- separate human-readable markdown reports in `results/` per preset
+- recorded preset name, tokenizer type, parameter count, validation perplexity, test perplexity, throughput, and short generation samples
 
 ## Parameter and Fairness Strategy
 
@@ -213,6 +245,7 @@ Testing will focus first on correctness, then on small-scope execution safety.
 - RoPE application sanity
 - differential attention tensor shape and masking behavior
 - vocabulary and batch-building correctness
+- byte-level tokenization correctness
 - optional tied-weights behavior if enabled
 
 ### Behavioral tests
@@ -233,14 +266,19 @@ This project is complete when all of the following are true:
 - Differential Transformer is implemented directly in PyTorch
 - two strong baselines are implemented in the same codebase
 - one compact benchmark command trains and evaluates all three models on WikiText-2
+- one meaningful benchmark command trains and evaluates all three models on WikiText-2 with byte-level tokenization
 - results are exported in both machine-readable and human-readable form
-- README documents the paper choice, exact commands, assumptions, and limitations
+- README documents both presets, their tradeoffs, exact commands, assumptions, and limitations
 
 ## Risks and Tradeoffs
 
 ### Benchmark realism
 
-This setup prioritizes clarity and reproducibility over modern large-scale realism. Word-level WikiText-2 is a compact benchmark, not a frontier-language-model training setup.
+This setup prioritizes clarity and reproducibility over modern large-scale realism. Even the more meaningful preset remains a compact local benchmark, not a frontier-language-model training setup.
+
+### Metric comparability
+
+Byte-level perplexity from the meaningful preset will not be numerically comparable to the old word-level perplexity from the compact preset. The compact preset should therefore be treated as a smoke test, while the meaningful preset becomes the benchmark we actually care about for architecture comparison.
 
 ### Paper fidelity
 
@@ -255,7 +293,7 @@ Throughput and wall-clock measurements will depend heavily on local hardware. Re
 The repository will include:
 
 - a top-level `README.md` with setup and benchmark commands
-- configuration files documenting the compact preset
+- configuration files documenting both presets
 - generated result summaries
 - this design document
 
