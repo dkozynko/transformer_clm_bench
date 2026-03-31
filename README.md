@@ -16,7 +16,7 @@ Primary paper:
 
 - Tianzhu Ye et al., `Differential Transformer`, arXiv:2410.05258, submitted October 7, 2024 and revised April 7, 2025
 
-The benchmark is intentionally compact and local-machine-friendly. It is designed for relative comparison under shared constraints, not paper-scale reproduction.
+The benchmark is intentionally local-machine-friendly. It is designed for relative comparison under shared constraints, not paper-scale reproduction.
 
 ## Project Layout
 
@@ -27,9 +27,12 @@ The benchmark is intentionally compact and local-machine-friendly. It is designe
 - `docs/superpowers/specs/`: design spec
 - `docs/superpowers/plans/`: implementation plan
 
-## Dataset
+## Dataset And Tokenization
 
-The compact preset uses `WikiText-2` with a word-level vocabulary capped at `5000` tokens.
+Both presets use `WikiText-2`.
+
+- `compact`: word-level vocabulary capped at `5000` tokens for quick smoke testing
+- `meaningful`: byte-level tokenization for more interpretable samples and a less degenerate benchmark
 
 The benchmark expects these cached files:
 
@@ -66,7 +69,16 @@ pip install -e .
 pytest -v
 ```
 
-## Running The Compact Benchmark
+## Benchmark Presets
+
+### Compact
+
+Purpose:
+
+- quick smoke test
+- fast architecture wiring check
+
+Command:
 
 ```bash
 python3 scripts/run_benchmark.py --preset compact
@@ -74,21 +86,48 @@ python3 scripts/run_benchmark.py --preset compact
 
 Outputs:
 
-- `results/benchmark_summary.json`
-- `results/benchmark_report.md`
+- `results/benchmark_summary_compact.json`
+- `results/benchmark_report_compact.md`
 
-## Current Compact Benchmark Result
-
-These numbers were produced locally on CPU with the current compact preset:
+Current recorded result:
 
 | Model | Params | Val PPL | Test PPL | Tokens/sec |
 | --- | ---: | ---: | ---: | ---: |
-| vanilla | 424,192 | 2923.40 | 2880.96 | 8414.14 |
-| llama | 453,056 | 2917.95 | 2888.86 | 3209.21 |
-| differential | 470,240 | 2969.49 | 2933.16 | 2803.41 |
+| vanilla | 424,192 | 2923.40 | 2880.96 | 7032.03 |
+| llama | 453,056 | 2917.95 | 2888.86 | 5090.91 |
+| differential | 470,240 | 2969.49 | 2933.16 | 4599.89 |
+
+### Meaningful
+
+Purpose:
+
+- roughly 10-minute CPU benchmark
+- readable generation samples
+- stronger relative comparison across architectures
+
+Command:
+
+```bash
+python3 scripts/run_benchmark.py --preset meaningful
+```
+
+Outputs:
+
+- `results/benchmark_summary_meaningful.json`
+- `results/benchmark_report_meaningful.md`
+
+Current recorded result:
+
+| Model | Params | Val PPL | Test PPL | Tokens/sec |
+| --- | ---: | ---: | ---: | ---: |
+| vanilla | 372,864 | 13.94 | 13.82 | 17495.76 |
+| llama | 471,648 | 12.36 | 12.24 | 12637.04 |
+| differential | 528,744 | 14.89 | 14.80 | 8599.56 |
 
 ## Notes And Limitations
 
-- The current preset is only `20` optimization steps, so the benchmark is useful for smoke-testing architecture behavior, not for claiming absolute quality.
+- The `compact` preset is only for smoke-testing architecture behavior, not for claiming absolute quality.
+- The `meaningful` preset is the benchmark to care about for relative comparison in this repo.
+- Byte-level perplexity from `meaningful` is not numerically comparable to word-level perplexity from `compact`.
 - Differential Transformer is implemented from its core differential-attention idea in this repo, but this is still a compact adaptation rather than a full large-scale paper reproduction.
-- The generation samples are sanity checks only and are expected to be poor under such a small training budget.
+- The generation samples are still sanity checks, not polished text generation demos. In the current meaningful run the models often terminate immediately after the prompt, which is still readable but not yet a strong continuation benchmark.
