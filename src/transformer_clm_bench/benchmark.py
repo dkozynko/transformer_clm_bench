@@ -8,31 +8,33 @@ import torch
 from torch.utils.data import DataLoader
 
 from .config import BenchmarkConfig
-from .data import LanguageModelingDataset, decode_ids, encode_tokens, load_corpus_bundle
+from .data import LanguageModelingDataset, decode_token_ids, encode_text, load_corpus_bundle
 from .modeling import build_model
 from .training import evaluate_model, resolve_device, set_seed, train_model
 
 
 def generate_sample(
     model: torch.nn.Module,
-    vocab: dict[str, int],
-    prompt: str,
     *,
+    tokenizer_name: str,
+    vocab: dict[str, int] | None,
+    prompt: str,
     device: torch.device,
     max_new_tokens: int = 16,
 ) -> str:
     model.eval()
-    token_buffer = encode_tokens(["<bos>", *prompt.split()], vocab)
-    reverse_vocab = {idx: token for token, idx in vocab.items()}
+    token_buffer = encode_text(prompt, tokenizer_name=tokenizer_name, vocab=vocab)
     x = torch.tensor([token_buffer], dtype=torch.long, device=device)
     with torch.no_grad():
         for _ in range(max_new_tokens):
             logits = model(x[:, -model.max_seq_len :])
             next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
             x = torch.cat([x, next_token], dim=1)
-            if next_token.item() == vocab["<eos>"]:
+            if tokenizer_name == "word" and vocab is not None and next_token.item() == vocab["<eos>"]:
                 break
-    return " ".join(reverse_vocab.get(token_id, "<unk>") for token_id in x[0].tolist())
+            if tokenizer_name == "byte" and next_token.item() == 258:
+                break
+    return decode_token_ids(x[0], tokenizer_name=tokenizer_name, vocab=vocab)
 
 
 def run_benchmark(config: BenchmarkConfig) -> dict:
@@ -40,6 +42,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict:
     device = resolve_device(config.device)
     corpus = load_corpus_bundle(
         config.data_dir,
+        tokenizer_name=config.tokenizer_name,
         min_freq=config.min_freq,
         max_vocab_size=config.max_vocab_size,
     )
@@ -56,14 +59,14 @@ def run_benchmark(config: BenchmarkConfig) -> dict:
             **{k: (str(v) if isinstance(v, Path) else v) for k, v in asdict(config).items()},
             "device": str(device),
         },
-        "vocab_size": len(corpus.vocab),
+        "vocab_size": corpus.vocab_size,
         "models": [],
     }
 
     for model_name in config.model_names:
         model = build_model(
             name=model_name,
-            vocab_size=len(corpus.vocab),
+            vocab_size=corpus.vocab_size,
             d_model=config.d_model,
             n_layers=config.n_layers,
             n_heads=config.n_heads,
@@ -81,7 +84,14 @@ def run_benchmark(config: BenchmarkConfig) -> dict:
             eval_interval=config.eval_interval,
         )
         test_metrics = evaluate_model(model, test_loader, device)
-        sample = generate_sample(model, corpus.vocab, config.sample_prompt, device=device)
+        sample = generate_sample(
+            model,
+            tokenizer_name=corpus.tokenizer_name,
+            vocab=corpus.vocab,
+            prompt=config.sample_prompt,
+            device=device,
+            max_new_tokens=config.max_new_tokens,
+        )
         summary["models"].append(
             {
                 "name": model_name,
@@ -98,11 +108,22 @@ def run_benchmark(config: BenchmarkConfig) -> dict:
 
 def write_benchmark_report(summary: dict, output_dir: Path) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    json_path = output_dir / "benchmark_summary.json"
-    markdown_path = output_dir / "benchmark_report.md"
+    config = summary.get("config", {})
+    preset_name = config.get("preset_name", "benchmark")
+    tokenizer_name = config.get("tokenizer_name", "unknown")
+    json_path = output_dir / f"benchmark_summary_{preset_name}.json"
+    markdown_path = output_dir / f"benchmark_report_{preset_name}.md"
     json_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-    lines = ["# Benchmark Report", "", "## Models", ""]
+    lines = [
+        "# Benchmark Report",
+        "",
+        f"- Preset: `{preset_name}`",
+        f"- Tokenizer: `{tokenizer_name}`",
+        "",
+        "## Models",
+        "",
+    ]
     for model in summary.get("models", []):
         validation_perplexity = model.get("validation_perplexity")
         parameters = model.get("parameters")
