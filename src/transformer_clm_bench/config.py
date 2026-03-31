@@ -6,6 +6,8 @@ from pathlib import Path
 
 @dataclass(slots=True)
 class BenchmarkConfig:
+    preset_name: str = "compact"
+    tokenizer_name: str = "word"
     model_names: list[str] = field(default_factory=list)
     data_dir: Path = Path(".cache/wikitext-2")
     output_dir: Path = Path("results")
@@ -24,7 +26,32 @@ class BenchmarkConfig:
     seed: int = 2026
     device: str | None = None
     sample_prompt: str = "the meaning of life"
+    max_new_tokens: int = 16
 
     @classmethod
     def default_compact(cls) -> "BenchmarkConfig":
-        return cls(model_names=["vanilla", "llama", "differential"])
+        return cls(
+            preset_name="compact",
+            tokenizer_name="word",
+            model_names=["vanilla", "llama", "differential"],
+        )
+
+    @classmethod
+    def default_meaningful(cls) -> "BenchmarkConfig":
+        return cls(
+            preset_name="meaningful",
+            tokenizer_name="byte",
+            model_names=["vanilla", "llama", "differential"],
+            seq_len=128,
+            batch_size=24,
+            d_model=96,
+            n_layers=3,
+            n_heads=4,
+            learning_rate=2e-4,
+            eval_interval=25,
+            max_steps=200,
+            max_vocab_size=None,
+            min_freq=1,
+            sample_prompt="The meaning of life is",
+            max_new_tokens=48,
+        )
