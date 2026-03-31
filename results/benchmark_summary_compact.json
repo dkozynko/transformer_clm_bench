@@ -1,5 +1,7 @@
 {
   "config": {
+    "preset_name": "compact",
+    "tokenizer_name": "word",
     "model_names": [
       "vanilla",
       "llama",
@@ -21,7 +23,8 @@
     "min_freq": 1,
     "seed": 2026,
     "device": "cpu",
-    "sample_prompt": "the meaning of life"
+    "sample_prompt": "the meaning of life",
+    "max_new_tokens": 16
   },
   "vocab_size": 5000,
   "models": [
@@ -30,27 +33,27 @@
       "parameters": 424192,
       "validation_perplexity": 2923.3950936143065,
       "test_perplexity": 2880.963758627448,
-      "tokens_per_second": 8414.142475557823,
+      "tokens_per_second": 7032.026349709721,
       "steps_ran": 20,
-      "sample": "<bos> the meaning of life <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk>"
+      "sample": "the meaning of life"
     },
     {
       "name": "llama",
       "parameters": 453056,
       "validation_perplexity": 2917.9525246411854,
       "test_perplexity": 2888.8643734785296,
-      "tokens_per_second": 3209.210161380766,
+      "tokens_per_second": 5090.912277248849,
       "steps_ran": 20,
-      "sample": "<bos> the meaning of life <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk>"
+      "sample": "the meaning of life"
     },
     {
       "name": "differential",
       "parameters": 470240,
       "validation_perplexity": 2969.4888761228153,
       "test_perplexity": 2933.1596220293773,
-      "tokens_per_second": 2803.4130869865053,
+      "tokens_per_second": 4599.894956685423,
       "steps_ran": 20,
-      "sample": "<bos> the meaning of life <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk>"
+      "sample": "the meaning of life"
     }
   ]
 }
