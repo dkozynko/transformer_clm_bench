@@ -65,7 +65,15 @@ class SwiGLUFeedForward(nn.Module):
 
 
 class StandardSelfAttention(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, *, use_rope: bool, dropout: float = 0.0) -> None:
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        *,
+        use_rope: bool,
+        dropout: float = 0.0,
+        layer_idx: int = 0,
+    ) -> None:
         super().__init__()
         if d_model % n_heads != 0:
             raise ValueError("d_model must be divisible by n_heads.")
@@ -98,21 +106,87 @@ class StandardSelfAttention(nn.Module):
         return self.resid_dropout(self.out_proj(out))
 
 
+class DifferentialSelfAttention(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        *,
+        use_rope: bool,
+        dropout: float = 0.0,
+        layer_idx: int = 0,
+    ) -> None:
+        super().__init__()
+        if d_model % n_heads != 0:
+            raise ValueError("d_model must be divisible by n_heads.")
+        self.n_heads = n_heads
+        self.head_dim = d_model // n_heads
+        self.use_rope = use_rope
+        self.lambda_init = 0.8 - 0.6 * math.exp(-0.3 * layer_idx)
+        self.q_proj = nn.Linear(d_model, 2 * d_model)
+        self.k_proj = nn.Linear(d_model, 2 * d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
+        self.attn_dropout = nn.Dropout(dropout)
+        self.resid_dropout = nn.Dropout(dropout)
+        self.head_norm = RMSNorm(self.head_dim)
+        self.lambda_q1 = nn.Parameter(torch.zeros(n_heads, self.head_dim))
+        self.lambda_k1 = nn.Parameter(torch.zeros(n_heads, self.head_dim))
+        self.lambda_q2 = nn.Parameter(torch.zeros(n_heads, self.head_dim))
+        self.lambda_k2 = nn.Parameter(torch.zeros(n_heads, self.head_dim))
+
+    def _lambda(self) -> torch.Tensor:
+        lam_1 = torch.exp((self.lambda_q1 * self.lambda_k1).sum(dim=-1))
+        lam_2 = torch.exp((self.lambda_q2 * self.lambda_k2).sum(dim=-1))
+        return self.lambda_init + lam_1 - lam_2
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size, seq_len, d_model = x.shape
+        q = self.q_proj(x).view(batch_size, seq_len, self.n_heads, 2 * self.head_dim).transpose(1, 2)
+        k = self.k_proj(x).view(batch_size, seq_len, self.n_heads, 2 * self.head_dim).transpose(1, 2)
+        v = self.v_proj(x).view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        q1, q2 = q.chunk(2, dim=-1)
+        k1, k2 = k.chunk(2, dim=-1)
+
+        if self.use_rope:
+            cos, sin = build_rope_cache(seq_len, self.head_dim, x.device, q1.dtype)
+            q1 = apply_rope(q1, cos, sin)
+            q2 = apply_rope(q2, cos, sin)
+            k1 = apply_rope(k1, cos, sin)
+            k2 = apply_rope(k2, cos, sin)
+
+        scores_1 = torch.matmul(q1, k1.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        scores_2 = torch.matmul(q2, k2.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool), diagonal=1)
+        scores_1 = scores_1.masked_fill(causal_mask, torch.finfo(scores_1.dtype).min)
+        scores_2 = scores_2.masked_fill(causal_mask, torch.finfo(scores_2.dtype).min)
+        attn_1 = torch.softmax(scores_1, dim=-1)
+        attn_2 = torch.softmax(scores_2, dim=-1)
+        lambdas = self._lambda().view(1, self.n_heads, 1, 1).to(dtype=attn_1.dtype, device=x.device)
+        attn = self.attn_dropout(attn_1 - lambdas * attn_2)
+        out = torch.matmul(attn, v)
+        out = self.head_norm(out) * (1.0 - self.lambda_init)
+        out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, d_model)
+        return self.resid_dropout(self.out_proj(out))
+
+
 class TransformerBlock(nn.Module):
     def __init__(
         self,
         d_model: int,
         n_heads: int,
         *,
+        attention_cls: type[nn.Module],
         norm_cls: type[nn.Module],
         ff_cls: type[nn.Module],
         use_rope: bool,
         dropout: float = 0.0,
+        layer_idx: int = 0,
     ) -> None:
         super().__init__()
         hidden_dim = 4 * d_model
         self.norm_1 = norm_cls(d_model)
-        self.attn = StandardSelfAttention(d_model, n_heads, use_rope=use_rope, dropout=dropout)
+        self.attn = attention_cls(d_model, n_heads, use_rope=use_rope, dropout=dropout, layer_idx=layer_idx)
         self.norm_2 = norm_cls(d_model)
         self.ff = ff_cls(d_model, hidden_dim, dropout=dropout)
 
@@ -124,6 +198,7 @@ class TransformerBlock(nn.Module):
 
 @dataclass(slots=True)
 class ModelSpec:
+    attention_cls: type[nn.Module]
     norm_cls: type[nn.Module]
     ff_cls: type[nn.Module]
     use_rope: bool
@@ -131,8 +206,27 @@ class ModelSpec:
 
 
 MODEL_SPECS = {
-    "vanilla": ModelSpec(norm_cls=nn.LayerNorm, ff_cls=FeedForward, use_rope=False, learned_positions=True),
-    "llama": ModelSpec(norm_cls=RMSNorm, ff_cls=SwiGLUFeedForward, use_rope=True, learned_positions=False),
+    "vanilla": ModelSpec(
+        attention_cls=StandardSelfAttention,
+        norm_cls=nn.LayerNorm,
+        ff_cls=FeedForward,
+        use_rope=False,
+        learned_positions=True,
+    ),
+    "llama": ModelSpec(
+        attention_cls=StandardSelfAttention,
+        norm_cls=RMSNorm,
+        ff_cls=SwiGLUFeedForward,
+        use_rope=True,
+        learned_positions=False,
+    ),
+    "differential": ModelSpec(
+        attention_cls=DifferentialSelfAttention,
+        norm_cls=RMSNorm,
+        ff_cls=SwiGLUFeedForward,
+        use_rope=True,
+        learned_positions=False,
+    ),
 }
 
 
@@ -158,12 +252,14 @@ class TransformerLM(nn.Module):
                 TransformerBlock(
                     d_model,
                     n_heads,
+                    attention_cls=spec.attention_cls,
                     norm_cls=spec.norm_cls,
                     ff_cls=spec.ff_cls,
                     use_rope=spec.use_rope,
                     dropout=dropout,
+                    layer_idx=layer_idx,
                 )
-                for _ in range(n_layers)
+                for layer_idx in range(n_layers)
             ]
         )
         self.norm = spec.norm_cls(d_model)
