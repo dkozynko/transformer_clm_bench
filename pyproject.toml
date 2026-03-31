@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "transformer-clm-bench"
+version = "0.1.0"
+description = "Compact causal language modeling benchmark for Differential Transformer and strong baselines."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "torch",
+    "tqdm",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
