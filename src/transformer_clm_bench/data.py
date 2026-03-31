@@ -10,7 +10,12 @@ import torch
 from torch.utils.data import Dataset
 
 
-SPECIAL_TOKENS = ("<pad>", "<unk>", "<bos>", "<eos>")
+WORD_SPECIAL_TOKENS = ("<pad>", "<unk>", "<bos>", "<eos>")
+SPECIAL_TOKENS = WORD_SPECIAL_TOKENS
+BYTE_PAD_ID = 256
+BYTE_BOS_ID = 257
+BYTE_EOS_ID = 258
+BYTE_VOCAB_SIZE = 259
 DEFAULT_WIKITEXT2_URLS = {
     "train": "https://raw.githubusercontent.com/pytorch/examples/main/word_language_model/data/wikitext-2/train.txt",
     "validation": "https://raw.githubusercontent.com/pytorch/examples/main/word_language_model/data/wikitext-2/valid.txt",
@@ -30,7 +35,7 @@ def build_vocabulary(
     max_size: int | None = None,
 ) -> dict[str, int]:
     counts = Counter(token for sequence in token_sequences for token in sequence)
-    vocab = {token: idx for idx, token in enumerate(SPECIAL_TOKENS)}
+    vocab = {token: idx for idx, token in enumerate(WORD_SPECIAL_TOKENS)}
     items = [(token, count) for token, count in counts.items() if count >= min_freq and token not in vocab]
     items.sort(key=lambda item: (-item[1], item[0]))
     if max_size is not None:
@@ -48,6 +53,50 @@ def encode_tokens(tokens: Sequence[str], vocab: dict[str, int]) -> list[int]:
 def decode_ids(token_ids: Sequence[int], vocab: dict[str, int]) -> list[str]:
     reverse_vocab = {idx: token for token, idx in vocab.items()}
     return [reverse_vocab.get(token_id, "<unk>") for token_id in token_ids]
+
+
+def encode_text(text: str, *, tokenizer_name: str, vocab: dict[str, int] | None = None) -> list[int]:
+    if tokenizer_name == "word":
+        if vocab is None:
+            raise ValueError("Word tokenization requires a vocabulary.")
+        tokens = tokenize_line(text)
+        return encode_tokens(tokens, vocab)
+    if tokenizer_name == "byte":
+        return [BYTE_BOS_ID, *text.encode("utf-8"), BYTE_EOS_ID]
+    raise ValueError(f"Unsupported tokenizer_name: {tokenizer_name}")
+
+
+def decode_token_ids(
+    token_ids: Sequence[int] | torch.Tensor,
+    *,
+    tokenizer_name: str,
+    vocab: dict[str, int] | None = None,
+) -> str:
+    ids = [int(token_id) for token_id in token_ids]
+    if tokenizer_name == "word":
+        if vocab is None:
+            raise ValueError("Word decoding requires a vocabulary.")
+        reverse_vocab = {idx: token for token, idx in vocab.items()}
+        tokens: list[str] = []
+        for token_id in ids:
+            token = reverse_vocab.get(token_id, "<unk>")
+            if token == "<eos>":
+                break
+            if token in {"<pad>", "<bos>"}:
+                continue
+            tokens.append(token)
+        return " ".join(tokens)
+    if tokenizer_name == "byte":
+        raw_bytes = bytearray()
+        for token_id in ids:
+            if token_id == BYTE_EOS_ID:
+                break
+            if token_id in {BYTE_PAD_ID, BYTE_BOS_ID}:
+                continue
+            if 0 <= token_id < 256:
+                raw_bytes.append(token_id)
+        return raw_bytes.decode("utf-8", errors="replace")
+    raise ValueError(f"Unsupported tokenizer_name: {tokenizer_name}")
 
 
 def load_token_sequences(path: Path) -> list[list[str]]:
@@ -74,7 +123,9 @@ def ensure_wikitext2_dataset(data_dir: Path) -> dict[str, Path]:
 
 @dataclass(slots=True)
 class CorpusBundle:
-    vocab: dict[str, int]
+    tokenizer_name: str
+    vocab: dict[str, int] | None
+    vocab_size: int
     train_ids: torch.Tensor
     valid_ids: torch.Tensor
     test_ids: torch.Tensor
@@ -83,20 +134,37 @@ class CorpusBundle:
 def load_corpus_bundle(
     data_dir: Path,
     *,
+    tokenizer_name: str = "word",
     min_freq: int = 1,
     max_vocab_size: int | None = None,
 ) -> CorpusBundle:
     split_paths = ensure_wikitext2_dataset(data_dir)
-    train_sequences = load_token_sequences(split_paths["train"])
-    valid_sequences = load_token_sequences(split_paths["validation"])
-    test_sequences = load_token_sequences(split_paths["test"])
-    vocab = build_vocabulary(train_sequences, min_freq=min_freq, max_size=max_vocab_size)
-    return CorpusBundle(
-        vocab=vocab,
-        train_ids=torch.tensor(flatten_encoded_sequences(train_sequences, vocab), dtype=torch.long),
-        valid_ids=torch.tensor(flatten_encoded_sequences(valid_sequences, vocab), dtype=torch.long),
-        test_ids=torch.tensor(flatten_encoded_sequences(test_sequences, vocab), dtype=torch.long),
-    )
+    if tokenizer_name == "word":
+        train_sequences = load_token_sequences(split_paths["train"])
+        valid_sequences = load_token_sequences(split_paths["validation"])
+        test_sequences = load_token_sequences(split_paths["test"])
+        vocab = build_vocabulary(train_sequences, min_freq=min_freq, max_size=max_vocab_size)
+        return CorpusBundle(
+            tokenizer_name=tokenizer_name,
+            vocab=vocab,
+            vocab_size=len(vocab),
+            train_ids=torch.tensor(flatten_encoded_sequences(train_sequences, vocab), dtype=torch.long),
+            valid_ids=torch.tensor(flatten_encoded_sequences(valid_sequences, vocab), dtype=torch.long),
+            test_ids=torch.tensor(flatten_encoded_sequences(test_sequences, vocab), dtype=torch.long),
+        )
+    if tokenizer_name == "byte":
+        train_text = split_paths["train"].read_text(encoding="utf-8")
+        valid_text = split_paths["validation"].read_text(encoding="utf-8")
+        test_text = split_paths["test"].read_text(encoding="utf-8")
+        return CorpusBundle(
+            tokenizer_name=tokenizer_name,
+            vocab=None,
+            vocab_size=BYTE_VOCAB_SIZE,
+            train_ids=torch.tensor(encode_text(train_text, tokenizer_name="byte"), dtype=torch.long),
+            valid_ids=torch.tensor(encode_text(valid_text, tokenizer_name="byte"), dtype=torch.long),
+            test_ids=torch.tensor(encode_text(test_text, tokenizer_name="byte"), dtype=torch.long),
+        )
+    raise ValueError(f"Unsupported tokenizer_name: {tokenizer_name}")
 
 
 class LanguageModelingDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
