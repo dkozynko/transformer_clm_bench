@@ -1,0 +1,56 @@
+{
+  "config": {
+    "model_names": [
+      "vanilla",
+      "llama",
+      "differential"
+    ],
+    "data_dir": ".cache/wikitext-2",
+    "output_dir": "results",
+    "seq_len": 64,
+    "batch_size": 16,
+    "d_model": 64,
+    "n_layers": 2,
+    "n_heads": 4,
+    "dropout": 0.0,
+    "learning_rate": 0.0003,
+    "weight_decay": 0.01,
+    "eval_interval": 10,
+    "max_steps": 20,
+    "max_vocab_size": 5000,
+    "min_freq": 1,
+    "seed": 2026,
+    "device": "cpu",
+    "sample_prompt": "the meaning of life"
+  },
+  "vocab_size": 5000,
+  "models": [
+    {
+      "name": "vanilla",
+      "parameters": 424192,
+      "validation_perplexity": 2923.3950936143065,
+      "test_perplexity": 2880.963758627448,
+      "tokens_per_second": 8414.142475557823,
+      "steps_ran": 20,
+      "sample": "<bos> the meaning of life <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk>"
+    },
+    {
+      "name": "llama",
+      "parameters": 453056,
+      "validation_perplexity": 2917.9525246411854,
+      "test_perplexity": 2888.8643734785296,
+      "tokens_per_second": 3209.210161380766,
+      "steps_ran": 20,
+      "sample": "<bos> the meaning of life <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk>"
+    },
+    {
+      "name": "differential",
+      "parameters": 470240,
+      "validation_perplexity": 2969.4888761228153,
+      "test_perplexity": 2933.1596220293773,
+      "tokens_per_second": 2803.4130869865053,
+      "steps_ran": 20,
+      "sample": "<bos> the meaning of life <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk> <unk>"
+    }
+  ]
+}
