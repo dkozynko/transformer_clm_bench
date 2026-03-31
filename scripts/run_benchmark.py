@@ -14,15 +14,17 @@ from transformer_clm_bench.config import BenchmarkConfig
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the compact Transformer CLM benchmark.")
-    parser.add_argument("--preset", default="compact", choices=["compact"])
+    parser = argparse.ArgumentParser(description="Run Transformer CLM benchmark presets.")
+    parser.add_argument("--preset", default="compact", choices=["compact", "meaningful"])
     parser.add_argument("--device", default=None)
     args = parser.parse_args()
 
-    if args.preset != "compact":
+    if args.preset == "compact":
+        config = BenchmarkConfig.default_compact()
+    elif args.preset == "meaningful":
+        config = BenchmarkConfig.default_meaningful()
+    else:
         raise ValueError(f"Unsupported preset: {args.preset}")
-
-    config = BenchmarkConfig.default_compact()
     config.device = args.device
     summary = run_benchmark(config)
     paths = write_benchmark_report(summary, config.output_dir)
