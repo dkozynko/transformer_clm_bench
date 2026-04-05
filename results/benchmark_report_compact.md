@@ -6,22 +6,22 @@
 ## Models
 
 ### vanilla
-- Test perplexity: 2880.9638
-- Validation perplexity: 2923.3951
+- Test perplexity: 2880.9673
+- Validation perplexity: 2923.3987
 - Parameters: 424192
-- Tokens/sec: 7032.03
+- Tokens/sec: 8673.80
 - Sample: `the meaning of life`
 
 ### llama
-- Test perplexity: 2888.8644
-- Validation perplexity: 2917.9525
+- Test perplexity: 2888.8687
+- Validation perplexity: 2917.9567
 - Parameters: 453056
-- Tokens/sec: 5090.91
+- Tokens/sec: 9576.93
 - Sample: `the meaning of life`
 
 ### differential
-- Test perplexity: 2933.1596
-- Validation perplexity: 2969.4889
-- Parameters: 470240
-- Tokens/sec: 4599.89
+- Test perplexity: 2091.1594
+- Validation perplexity: 2126.0695
+- Parameters: 470336
+- Tokens/sec: 8065.03
 - Sample: `the meaning of life`
