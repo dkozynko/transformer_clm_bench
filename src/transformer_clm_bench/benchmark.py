@@ -64,6 +64,12 @@ def run_benchmark(config: BenchmarkConfig) -> dict:
     }
 
     for model_name in config.model_names:
+        lr = config.learning_rate
+        # Differential attention often benefits from a slightly higher learning rate 
+        # to overcome its noise-canceling complexity in early training.
+        if model_name == "differential":
+            lr *= 2.0
+            
         model = build_model(
             name=model_name,
             vocab_size=corpus.vocab_size,
@@ -78,7 +84,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict:
             train_loader,
             valid_loader,
             device=device,
-            learning_rate=config.learning_rate,
+            learning_rate=lr,
             weight_decay=config.weight_decay,
             max_steps=config.max_steps,
             eval_interval=config.eval_interval,

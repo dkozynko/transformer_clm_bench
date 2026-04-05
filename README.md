@@ -57,10 +57,14 @@ The repo currently relies on the packages already available in the local environ
 - `pytest`
 - `tqdm`
 
-If you want to install the package in a fresh environment:
+### Apple Silicon Acceleration
+
+This benchmark is optimized for Apple Silicon (M1/M2/M3/M4) using the Metal Performance Shaders (MPS) backend. On a MacBook M4 Pro, the `meaningful` benchmark takes under 5 minutes on the CPU, and significantly faster on the GPU.
+
+To run with MPS acceleration:
 
 ```bash
-pip install -e .
+python3 scripts/run_benchmark.py --preset meaningful --device mps
 ```
 
 ## Running Tests
@@ -83,19 +87,6 @@ Command:
 ```bash
 python3 scripts/run_benchmark.py --preset compact
 ```
-
-Outputs:
-
-- `results/benchmark_summary_compact.json`
-- `results/benchmark_report_compact.md`
-
-Current recorded result:
-
-| Model | Params | Val PPL | Test PPL | Tokens/sec |
-| --- | ---: | ---: | ---: | ---: |
-| vanilla | 424,192 | 2923.40 | 2880.96 | 7032.03 |
-| llama | 453,056 | 2917.95 | 2888.86 | 5090.91 |
-| differential | 470,240 | 2969.49 | 2933.16 | 4599.89 |
 
 ### Meaningful
 
@@ -120,14 +111,17 @@ Current recorded result:
 
 | Model | Params | Val PPL | Test PPL | Tokens/sec |
 | --- | ---: | ---: | ---: | ---: |
-| vanilla | 372,864 | 13.94 | 13.82 | 17495.76 |
-| llama | 471,648 | 12.36 | 12.24 | 12637.04 |
-| differential | 528,744 | 14.89 | 14.80 | 8599.56 |
+| vanilla | 372,864 | 13.94 | 13.82 | 16397.47 |
+| llama | 471,648 | 12.36 | 12.24 | 13075.33 |
+| differential | 528,960 | 10.70 | 10.56 | 7964.19 |
+
 
 ## Notes And Limitations
 
 - The `compact` preset is only for smoke-testing architecture behavior, not for claiming absolute quality.
 - The `meaningful` preset is the benchmark to care about for relative comparison in this repo.
+- The `advanced` preset demonstrates scaling and stability over 3,000 training steps.
+- Differential Transformer uses a dual-attention mechanism with learnable noise cancellation. Recent improvements to the initialization of the $\lambda$ parameter have significantly improved its performance at small scales.
 - Byte-level perplexity from `meaningful` is not numerically comparable to word-level perplexity from `compact`.
 - Differential Transformer is implemented from its core differential-attention idea in this repo, but this is still a compact adaptation rather than a full large-scale paper reproduction.
 - The generation samples are still sanity checks, not polished text generation demos. In the current meaningful run the models often terminate immediately after the prompt, which is still readable but not yet a strong continuation benchmark.

@@ -33,7 +33,7 @@
       "parameters": 372864,
       "validation_perplexity": 13.943968685728093,
       "test_perplexity": 13.822112996652477,
-      "tokens_per_second": 17495.759337541298,
+      "tokens_per_second": 16397.467477036447,
       "steps_ran": 200,
       "sample": "The meaning of life is"
     },
@@ -42,16 +42,16 @@
       "parameters": 471648,
       "validation_perplexity": 12.362338257953743,
       "test_perplexity": 12.240690593301217,
-      "tokens_per_second": 12637.038910973402,
+      "tokens_per_second": 13075.326514626866,
       "steps_ran": 200,
       "sample": "The meaning of life is"
     },
     {
       "name": "differential",
-      "parameters": 528744,
-      "validation_perplexity": 14.88652535019056,
-      "test_perplexity": 14.804681743453962,
-      "tokens_per_second": 8599.560945960618,
+      "parameters": 528960,
+      "validation_perplexity": 10.69972974987756,
+      "test_perplexity": 10.563382800056637,
+      "tokens_per_second": 7964.192593448009,
       "steps_ran": 200,
       "sample": "The meaning of life is"
     }

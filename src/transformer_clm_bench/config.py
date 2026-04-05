@@ -29,6 +29,26 @@ class BenchmarkConfig:
     max_new_tokens: int = 16
 
     @classmethod
+    def default_advanced(cls) -> "BenchmarkConfig":
+        return cls(
+            preset_name="advanced",
+            tokenizer_name="byte",
+            model_names=["vanilla", "llama", "differential"],
+            seq_len=256,
+            batch_size=16,
+            d_model=256,
+            n_layers=6,
+            n_heads=8,
+            learning_rate=1e-4,
+            eval_interval=100,
+            max_steps=3000,
+            max_vocab_size=None,
+            min_freq=1,
+            sample_prompt="The meaning of life is a question that has",
+            max_new_tokens=64,
+        )
+
+    @classmethod
     def default_compact(cls) -> "BenchmarkConfig":
         return cls(
             preset_name="compact",

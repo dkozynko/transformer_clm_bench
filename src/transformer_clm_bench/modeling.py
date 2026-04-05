@@ -129,11 +129,12 @@ class DifferentialSelfAttention(nn.Module):
         self.out_proj = nn.Linear(d_model, d_model)
         self.attn_dropout = nn.Dropout(dropout)
         self.resid_dropout = nn.Dropout(dropout)
-        self.head_norm = RMSNorm(self.head_dim)
-        self.lambda_q1 = nn.Parameter(torch.zeros(n_heads, self.head_dim))
-        self.lambda_k1 = nn.Parameter(torch.zeros(n_heads, self.head_dim))
-        self.lambda_q2 = nn.Parameter(torch.zeros(n_heads, self.head_dim))
-        self.lambda_k2 = nn.Parameter(torch.zeros(n_heads, self.head_dim))
+        self.head_norm_weight = nn.Parameter(torch.ones(n_heads, self.head_dim))
+        self.lambda_q1 = nn.Parameter(torch.randn(n_heads, self.head_dim) * 0.1)
+        self.lambda_k1 = nn.Parameter(torch.randn(n_heads, self.head_dim) * 0.1)
+        self.lambda_q2 = nn.Parameter(torch.randn(n_heads, self.head_dim) * 0.1)
+        self.lambda_k2 = nn.Parameter(torch.randn(n_heads, self.head_dim) * 0.1)
+        self.eps = 1e-6
 
     def _lambda(self) -> torch.Tensor:
         lam_1 = torch.exp((self.lambda_q1 * self.lambda_k1).sum(dim=-1))
@@ -165,7 +166,11 @@ class DifferentialSelfAttention(nn.Module):
         lambdas = self._lambda().view(1, self.n_heads, 1, 1).to(dtype=attn_1.dtype, device=x.device)
         attn = self.attn_dropout(attn_1 - lambdas * attn_2)
         out = torch.matmul(attn, v)
-        out = self.head_norm(out) * (1.0 - self.lambda_init)
+        # Sub-layer norm (RMSNorm style but per-head)
+        rms = out.pow(2).mean(dim=-1, keepdim=True)
+        out = out * torch.rsqrt(rms + self.eps)
+        out = out * self.head_norm_weight.view(1, self.n_heads, 1, self.head_dim)
+        out = out * (1.0 - self.lambda_init)
         out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, d_model)
         return self.resid_dropout(self.out_proj(out))
 
