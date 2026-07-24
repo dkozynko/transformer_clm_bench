@@ -33,7 +33,7 @@ class BenchmarkConfig:
         return cls(
             preset_name="advanced",
             tokenizer_name="byte",
-            model_names=["vanilla", "llama", "differential"],
+            model_names=["vanilla", "llama", "differential", "fix"],
             seq_len=256,
             batch_size=16,
             d_model=256,
@@ -53,7 +53,7 @@ class BenchmarkConfig:
         return cls(
             preset_name="compact",
             tokenizer_name="word",
-            model_names=["vanilla", "llama", "differential"],
+            model_names=["vanilla", "llama", "differential", "fix"],
         )
 
     @classmethod
@@ -61,7 +61,7 @@ class BenchmarkConfig:
         return cls(
             preset_name="meaningful",
             tokenizer_name="byte",
-            model_names=["vanilla", "llama", "differential"],
+            model_names=["vanilla", "llama", "differential", "fix"],
             seq_len=128,
             batch_size=24,
             d_model=96,

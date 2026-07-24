@@ -73,6 +73,7 @@ class StandardSelfAttention(nn.Module):
         use_rope: bool,
         dropout: float = 0.0,
         layer_idx: int = 0,
+        vocab_size: int | None = None,
     ) -> None:
         super().__init__()
         if d_model % n_heads != 0:
@@ -85,7 +86,7 @@ class StandardSelfAttention(nn.Module):
         self.attn_dropout = nn.Dropout(dropout)
         self.resid_dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, token_ids: torch.Tensor | None = None) -> torch.Tensor:
         batch_size, seq_len, d_model = x.shape
         qkv = self.qkv_proj(x)
         qkv = qkv.view(batch_size, seq_len, 3, self.n_heads, self.head_dim).permute(2, 0, 3, 1, 4)
@@ -115,6 +116,7 @@ class DifferentialSelfAttention(nn.Module):
         use_rope: bool,
         dropout: float = 0.0,
         layer_idx: int = 0,
+        vocab_size: int | None = None,
     ) -> None:
         super().__init__()
         if d_model % n_heads != 0:
@@ -141,7 +143,7 @@ class DifferentialSelfAttention(nn.Module):
         lam_2 = torch.exp((self.lambda_q2 * self.lambda_k2).sum(dim=-1))
         return self.lambda_init + lam_1 - lam_2
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, token_ids: torch.Tensor | None = None) -> torch.Tensor:
         batch_size, seq_len, d_model = x.shape
         q = self.q_proj(x).view(batch_size, seq_len, self.n_heads, 2 * self.head_dim).transpose(1, 2)
         k = self.k_proj(x).view(batch_size, seq_len, self.n_heads, 2 * self.head_dim).transpose(1, 2)
@@ -175,6 +177,113 @@ class DifferentialSelfAttention(nn.Module):
         return self.resid_dropout(self.out_proj(out))
 
 
+class FiXSelfAttention(nn.Module):
+    """Fine-grained Forgetting Attention from Li et al. (ICML 2026).
+
+    The compact implementation intentionally materializes the feature-wise
+    decay tensor, which makes the paper's mechanism transparent for short
+    benchmark contexts. The paper's Flash Fine-grained Attention kernel is
+    necessary for efficient long-context training but is out of scope here.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        *,
+        use_rope: bool,
+        dropout: float = 0.0,
+        layer_idx: int = 0,
+        vocab_size: int | None = None,
+    ) -> None:
+        super().__init__()
+        if d_model % n_heads != 0:
+            raise ValueError("d_model must be divisible by n_heads.")
+        if vocab_size is None:
+            raise ValueError("FiX requires vocab_size for the first-layer forget-gate embedding.")
+
+        self.n_heads = n_heads
+        self.head_dim = d_model // n_heads
+        self.use_rope = use_rope
+        self.layer_idx = layer_idx
+        self.qkv_proj = nn.Linear(d_model, 3 * d_model)
+        self.out_norm = RMSNorm(d_model, eps=1e-30)
+        self.out_proj = nn.Linear(d_model, d_model)
+        self.attn_dropout = nn.Dropout(dropout)
+        self.resid_dropout = nn.Dropout(dropout)
+
+        if layer_idx == 0:
+            # The paper avoids a hidden-state projection for discrete input
+            # embeddings because its first-layer gate gradients are unstable.
+            self.token_gate_embedding = nn.Embedding(vocab_size, d_model)
+            self.gate_down = None
+            self.gate_norm = None
+            self.gate_up = None
+            self.log_gate_strength = None
+        else:
+            gate_rank = max(1, math.ceil(d_model / 16))
+            self.token_gate_embedding = None
+            self.gate_down = nn.Linear(d_model, gate_rank, bias=False)
+            self.gate_norm = RMSNorm(gate_rank)
+            self.gate_up = nn.Linear(gate_rank, d_model)
+            self.log_gate_strength = nn.Parameter(torch.empty(d_model))
+
+    def reset_gate_parameters(self) -> None:
+        """Initialize FiX decay scales with the paper's Mamba-style recipe."""
+        if self.log_gate_strength is None or self.gate_up is None:
+            return
+        with torch.no_grad():
+            strength = torch.empty_like(self.log_gate_strength).uniform_(0.0, 16.0).clamp_min_(1e-4)
+            self.log_gate_strength.copy_(strength.log())
+            time_step = torch.empty_like(self.gate_up.bias).uniform_(math.log(1e-3), math.log(1e-1)).exp_()
+            time_step.clamp_min_(1e-4)
+            # softplus^{-1}(x) = x + log(1 - exp(-x)), computed stably.
+            self.gate_up.bias.copy_(time_step + torch.log(-torch.expm1(-time_step)))
+
+    def _log_forget_gates(self, x: torch.Tensor, token_ids: torch.Tensor | None) -> torch.Tensor:
+        if self.token_gate_embedding is not None:
+            if token_ids is None:
+                raise ValueError("FiX first-layer attention requires token IDs.")
+            return F.logsigmoid(-self.token_gate_embedding(token_ids))
+
+        assert self.gate_down is not None
+        assert self.gate_norm is not None
+        assert self.gate_up is not None
+        assert self.log_gate_strength is not None
+        gate_logits = self.gate_up(self.gate_norm(self.gate_down(x)))
+        # sigmoid(-x) ** a = exp(-softplus(x) * a). The log form is both
+        # faithful to FiX and stable when decays span many timesteps.
+        return -F.softplus(gate_logits) * self.log_gate_strength.exp()
+
+    def forward(self, x: torch.Tensor, token_ids: torch.Tensor | None = None) -> torch.Tensor:
+        batch_size, seq_len, d_model = x.shape
+        qkv = self.qkv_proj(x)
+        qkv = qkv.view(batch_size, seq_len, 3, self.n_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv.unbind(dim=0)
+
+        if self.use_rope:
+            cos, sin = build_rope_cache(seq_len, self.head_dim, x.device, q.dtype)
+            q = apply_rope(q, cos, sin)
+            k = apply_rope(k, cos, sin)
+
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool), diagonal=1)
+        scores = scores.masked_fill(causal_mask, torch.finfo(scores.dtype).min)
+        attn = self.attn_dropout(torch.softmax(scores, dim=-1))
+
+        log_gates = self._log_forget_gates(x, token_ids)
+        log_gates = log_gates.view(batch_size, seq_len, self.n_heads, self.head_dim).permute(0, 2, 1, 3)
+        cumulative_log_gates = log_gates.cumsum(dim=2)
+        log_decay = cumulative_log_gates.unsqueeze(3) - cumulative_log_gates.unsqueeze(2)
+        log_decay = log_decay.masked_fill(causal_mask.view(1, 1, seq_len, seq_len, 1), 0.0)
+        value_decay = log_decay.exp()
+
+        out = torch.einsum("bhts,bhtsd,bhsd->bhtd", attn, value_decay, v)
+        out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, d_model)
+        out = self.out_norm(out)
+        return self.resid_dropout(self.out_proj(out))
+
+
 class TransformerBlock(nn.Module):
     def __init__(
         self,
@@ -187,16 +296,24 @@ class TransformerBlock(nn.Module):
         use_rope: bool,
         dropout: float = 0.0,
         layer_idx: int = 0,
+        vocab_size: int | None = None,
     ) -> None:
         super().__init__()
         hidden_dim = 4 * d_model
         self.norm_1 = norm_cls(d_model)
-        self.attn = attention_cls(d_model, n_heads, use_rope=use_rope, dropout=dropout, layer_idx=layer_idx)
+        self.attn = attention_cls(
+            d_model,
+            n_heads,
+            use_rope=use_rope,
+            dropout=dropout,
+            layer_idx=layer_idx,
+            vocab_size=vocab_size,
+        )
         self.norm_2 = norm_cls(d_model)
         self.ff = ff_cls(d_model, hidden_dim, dropout=dropout)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.attn(self.norm_1(x))
+    def forward(self, x: torch.Tensor, token_ids: torch.Tensor | None = None) -> torch.Tensor:
+        x = x + self.attn(self.norm_1(x), token_ids)
         x = x + self.ff(self.norm_2(x))
         return x
 
@@ -227,6 +344,13 @@ MODEL_SPECS = {
     ),
     "differential": ModelSpec(
         attention_cls=DifferentialSelfAttention,
+        norm_cls=RMSNorm,
+        ff_cls=SwiGLUFeedForward,
+        use_rope=True,
+        learned_positions=False,
+    ),
+    "fix": ModelSpec(
+        attention_cls=FiXSelfAttention,
         norm_cls=RMSNorm,
         ff_cls=SwiGLUFeedForward,
         use_rope=True,
@@ -263,6 +387,7 @@ class TransformerLM(nn.Module):
                     use_rope=spec.use_rope,
                     dropout=dropout,
                     layer_idx=layer_idx,
+                    vocab_size=vocab_size,
                 )
                 for layer_idx in range(n_layers)
             ]
@@ -270,6 +395,9 @@ class TransformerLM(nn.Module):
         self.norm = spec.norm_cls(d_model)
         self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
         self.apply(self._init_weights)
+        for block in self.blocks:
+            if isinstance(block.attn, FiXSelfAttention):
+                block.attn.reset_gate_parameters()
         self.lm_head.weight = self.token_emb.weight
 
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
@@ -282,7 +410,7 @@ class TransformerLM(nn.Module):
             x = x + self.position_emb(positions)[None, :, :]
         x = self.dropout(x)
         for block in self.blocks:
-            x = block(x)
+            x = block(x, token_ids)
         x = self.norm(x)
         return self.lm_head(x)
 

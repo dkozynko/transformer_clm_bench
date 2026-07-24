@@ -5,7 +5,8 @@
     "model_names": [
       "vanilla",
       "llama",
-      "differential"
+      "differential",
+      "fix"
     ],
     "data_dir": ".cache/wikitext-2",
     "output_dir": "results",
@@ -22,7 +23,7 @@
     "max_vocab_size": null,
     "min_freq": 1,
     "seed": 2026,
-    "device": "cpu",
+    "device": "mps",
     "sample_prompt": "The meaning of life is",
     "max_new_tokens": 48
   },
@@ -31,27 +32,36 @@
     {
       "name": "vanilla",
       "parameters": 372864,
-      "validation_perplexity": 13.943968685728093,
-      "test_perplexity": 13.822112996652477,
-      "tokens_per_second": 16397.467477036447,
+      "validation_perplexity": 13.943967395894353,
+      "test_perplexity": 13.822111876683456,
+      "tokens_per_second": 26648.986989624165,
       "steps_ran": 200,
       "sample": "The meaning of life is"
     },
     {
       "name": "llama",
       "parameters": 471648,
-      "validation_perplexity": 12.362338257953743,
-      "test_perplexity": 12.240690593301217,
-      "tokens_per_second": 13075.326514626866,
+      "validation_perplexity": 12.362336542657228,
+      "test_perplexity": 12.240689123394064,
+      "tokens_per_second": 19405.85965886308,
       "steps_ran": 200,
       "sample": "The meaning of life is"
     },
     {
       "name": "differential",
       "parameters": 528960,
-      "validation_perplexity": 10.69972974987756,
-      "test_perplexity": 10.563382800056637,
-      "tokens_per_second": 7964.192593448009,
+      "validation_perplexity": 10.707131449308298,
+      "test_perplexity": 10.56994644126616,
+      "tokens_per_second": 10252.109178967978,
+      "steps_ran": 200,
+      "sample": "The meaning of life is"
+    },
+    {
+      "name": "fix",
+      "parameters": 499500,
+      "validation_perplexity": 12.329697350208555,
+      "test_perplexity": 12.187641049134307,
+      "tokens_per_second": 953.8393282021618,
       "steps_ran": 200,
       "sample": "The meaning of life is"
     }
