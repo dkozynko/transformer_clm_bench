@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from .config import BenchmarkConfig
 from .data import LanguageModelingDataset, decode_token_ids, encode_text, load_corpus_bundle
 from .modeling import build_model
-from .training import evaluate_model, resolve_device, set_seed, train_model
+from .training import autocast_context, evaluate_model, resolve_autocast_dtype, resolve_device, set_seed, train_model
 
 
 def generate_sample(
@@ -21,13 +21,15 @@ def generate_sample(
     prompt: str,
     device: torch.device,
     max_new_tokens: int = 16,
+    autocast_dtype: torch.dtype | None = None,
 ) -> str:
     model.eval()
     token_buffer = encode_text(prompt, tokenizer_name=tokenizer_name, vocab=vocab)
     x = torch.tensor([token_buffer], dtype=torch.long, device=device)
     with torch.no_grad():
         for _ in range(max_new_tokens):
-            logits = model(x[:, -model.max_seq_len :])
+            with autocast_context(device, autocast_dtype):
+                logits = model(x[:, -model.max_seq_len :])
             next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
             x = torch.cat([x, next_token], dim=1)
             if tokenizer_name == "word" and vocab is not None and next_token.item() == vocab["<eos>"]:
@@ -40,6 +42,7 @@ def generate_sample(
 def run_benchmark(config: BenchmarkConfig) -> dict:
     set_seed(config.seed)
     device = resolve_device(config.device)
+    autocast_dtype = resolve_autocast_dtype(config.mixed_precision, device)
     corpus = load_corpus_bundle(
         config.data_dir,
         tokenizer_name=config.tokenizer_name,
@@ -78,6 +81,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict:
             n_heads=config.n_heads,
             max_seq_len=config.seq_len,
             dropout=config.dropout,
+            fix_backend=config.fix_backend,
         )
         train_result = train_model(
             model,
@@ -88,8 +92,9 @@ def run_benchmark(config: BenchmarkConfig) -> dict:
             weight_decay=config.weight_decay,
             max_steps=config.max_steps,
             eval_interval=config.eval_interval,
+            autocast_dtype=autocast_dtype,
         )
-        test_metrics = evaluate_model(model, test_loader, device)
+        test_metrics = evaluate_model(model, test_loader, device, autocast_dtype=autocast_dtype)
         sample = generate_sample(
             model,
             tokenizer_name=corpus.tokenizer_name,
@@ -97,6 +102,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict:
             prompt=config.sample_prompt,
             device=device,
             max_new_tokens=config.max_new_tokens,
+            autocast_dtype=autocast_dtype,
         )
         summary["models"].append(
             {

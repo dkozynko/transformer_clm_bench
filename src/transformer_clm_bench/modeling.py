@@ -180,10 +180,9 @@ class DifferentialSelfAttention(nn.Module):
 class FiXSelfAttention(nn.Module):
     """Fine-grained Forgetting Attention from Li et al. (ICML 2026).
 
-    The compact implementation intentionally materializes the feature-wise
-    decay tensor, which makes the paper's mechanism transparent for short
-    benchmark contexts. The paper's Flash Fine-grained Attention kernel is
-    necessary for efficient long-context training but is out of scope here.
+    The reference backend materializes feature-wise decay for portable,
+    short-context verification. The optional fused backend delegates to the
+    official CUDA/Triton custom-autograd implementation.
     """
 
     def __init__(
@@ -195,19 +194,25 @@ class FiXSelfAttention(nn.Module):
         dropout: float = 0.0,
         layer_idx: int = 0,
         vocab_size: int | None = None,
+        backend: str = "auto",
     ) -> None:
         super().__init__()
         if d_model % n_heads != 0:
             raise ValueError("d_model must be divisible by n_heads.")
         if vocab_size is None:
             raise ValueError("FiX requires vocab_size for the first-layer forget-gate embedding.")
+        if backend not in {"auto", "reference", "fused"}:
+            raise ValueError("FiX backend must be one of: auto, reference, fused.")
 
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
         self.use_rope = use_rope
         self.layer_idx = layer_idx
+        self.backend = backend
         self.qkv_proj = nn.Linear(d_model, 3 * d_model)
-        self.out_norm = RMSNorm(d_model, eps=1e-30)
+        # The official fused operator normalizes each head before the output
+        # projection, with one affine vector shared across heads.
+        self.head_norm = RMSNorm(self.head_dim, eps=1e-30)
         self.out_proj = nn.Linear(d_model, d_model)
         self.attn_dropout = nn.Dropout(dropout)
         self.resid_dropout = nn.Dropout(dropout)
@@ -244,7 +249,7 @@ class FiXSelfAttention(nn.Module):
         if self.token_gate_embedding is not None:
             if token_ids is None:
                 raise ValueError("FiX first-layer attention requires token IDs.")
-            return F.logsigmoid(-self.token_gate_embedding(token_ids))
+            return F.logsigmoid(-self.token_gate_embedding(token_ids).float())
 
         assert self.gate_down is not None
         assert self.gate_norm is not None
@@ -253,19 +258,53 @@ class FiXSelfAttention(nn.Module):
         gate_logits = self.gate_up(self.gate_norm(self.gate_down(x)))
         # sigmoid(-x) ** a = exp(-softplus(x) * a). The log form is both
         # faithful to FiX and stable when decays span many timesteps.
-        return -F.softplus(gate_logits) * self.log_gate_strength.exp()
+        return (-F.softplus(gate_logits.float()) * self.log_gate_strength.float().exp()).float()
 
-    def forward(self, x: torch.Tensor, token_ids: torch.Tensor | None = None) -> torch.Tensor:
-        batch_size, seq_len, d_model = x.shape
+    def _fused_unavailable_reason(self, x: torch.Tensor) -> str | None:
+        if x.device.type != "cuda":
+            return "requires CUDA tensors"
+        if x.dtype != torch.bfloat16:
+            return "requires torch.bfloat16 activations and parameters"
+        if self.head_dim not in {16, 32, 64, 128}:
+            return "requires a head dimension in {16, 32, 64, 128}"
+        if self.attn_dropout.p != 0.0:
+            return "does not support attention dropout"
+        try:
+            from fla.ops.fix_attn import parallel_fix_attn  # noqa: F401
+        except ImportError:
+            return "requires the pinned optional `fix-cuda` dependency"
+        return None
+
+    def _select_backend(self, q: torch.Tensor) -> str:
+        if self.backend == "reference":
+            return "reference"
+        unavailable_reason = self._fused_unavailable_reason(q)
+        if unavailable_reason is None:
+            return "fused"
+        if self.backend == "fused":
+            raise RuntimeError(f"FiX fused backend {unavailable_reason}.")
+        return "reference"
+
+    def _project_qkv(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        batch_size, seq_len, _ = x.shape
         qkv = self.qkv_proj(x)
         qkv = qkv.view(batch_size, seq_len, 3, self.n_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(dim=0)
-
         if self.use_rope:
             cos, sin = build_rope_cache(seq_len, self.head_dim, x.device, q.dtype)
             q = apply_rope(q, cos, sin)
             k = apply_rope(k, cos, sin)
+        return q, k, v
 
+    def _forward_reference(
+        self,
+        x: torch.Tensor,
+        token_ids: torch.Tensor | None,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+    ) -> torch.Tensor:
+        batch_size, seq_len, d_model = x.shape
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
         causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool), diagonal=1)
         scores = scores.masked_fill(causal_mask, torch.finfo(scores.dtype).min)
@@ -276,12 +315,44 @@ class FiXSelfAttention(nn.Module):
         cumulative_log_gates = log_gates.cumsum(dim=2)
         log_decay = cumulative_log_gates.unsqueeze(3) - cumulative_log_gates.unsqueeze(2)
         log_decay = log_decay.masked_fill(causal_mask.view(1, 1, seq_len, seq_len, 1), 0.0)
-        value_decay = log_decay.exp()
+        value_decay = log_decay.exp().to(dtype=v.dtype)
 
         out = torch.einsum("bhts,bhtsd,bhsd->bhtd", attn, value_decay, v)
+        out = self.head_norm(out)
         out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, d_model)
-        out = self.out_norm(out)
         return self.resid_dropout(self.out_proj(out))
+
+    def _forward_fused(
+        self,
+        x: torch.Tensor,
+        token_ids: torch.Tensor | None,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+    ) -> torch.Tensor:
+        from fla.ops.fix_attn import parallel_fix_attn
+
+        batch_size, seq_len, d_model = x.shape
+        log_gates = self._log_forget_gates(x, token_ids)
+        log_gates = log_gates.view(batch_size, seq_len, self.n_heads, self.head_dim).contiguous()
+        out = parallel_fix_attn(
+            q=q.transpose(1, 2).contiguous(),
+            k=k.transpose(1, 2).contiguous(),
+            v=v.transpose(1, 2).contiguous(),
+            g=log_gates,
+            scale=self.head_dim**-0.5,
+            o_norm=True,
+            o_norm_weight=self.head_norm.weight.to(dtype=q.dtype),
+            o_norm_eps=self.head_norm.eps,
+        )
+        out = out.contiguous().view(batch_size, seq_len, d_model)
+        return self.resid_dropout(self.out_proj(out))
+
+    def forward(self, x: torch.Tensor, token_ids: torch.Tensor | None = None) -> torch.Tensor:
+        q, k, v = self._project_qkv(x)
+        if self._select_backend(q) == "fused":
+            return self._forward_fused(x, token_ids, q, k, v)
+        return self._forward_reference(x, token_ids, q, k, v)
 
 
 class TransformerBlock(nn.Module):
@@ -297,17 +368,23 @@ class TransformerBlock(nn.Module):
         dropout: float = 0.0,
         layer_idx: int = 0,
         vocab_size: int | None = None,
+        fix_backend: str = "auto",
     ) -> None:
         super().__init__()
         hidden_dim = 4 * d_model
         self.norm_1 = norm_cls(d_model)
+        attention_kwargs = {
+            "use_rope": use_rope,
+            "dropout": dropout,
+            "layer_idx": layer_idx,
+            "vocab_size": vocab_size,
+        }
+        if attention_cls is FiXSelfAttention:
+            attention_kwargs["backend"] = fix_backend
         self.attn = attention_cls(
             d_model,
             n_heads,
-            use_rope=use_rope,
-            dropout=dropout,
-            layer_idx=layer_idx,
-            vocab_size=vocab_size,
+            **attention_kwargs,
         )
         self.norm_2 = norm_cls(d_model)
         self.ff = ff_cls(d_model, hidden_dim, dropout=dropout)
@@ -370,6 +447,7 @@ class TransformerLM(nn.Module):
         max_seq_len: int,
         spec: ModelSpec,
         dropout: float = 0.0,
+        fix_backend: str = "auto",
     ) -> None:
         super().__init__()
         self.max_seq_len = max_seq_len
@@ -388,6 +466,7 @@ class TransformerLM(nn.Module):
                     dropout=dropout,
                     layer_idx=layer_idx,
                     vocab_size=vocab_size,
+                    fix_backend=fix_backend,
                 )
                 for layer_idx in range(n_layers)
             ]
@@ -431,6 +510,7 @@ def build_model(
     n_heads: int,
     max_seq_len: int,
     dropout: float = 0.0,
+    fix_backend: str = "auto",
 ) -> nn.Module:
     try:
         spec = MODEL_SPECS[name]
@@ -444,4 +524,5 @@ def build_model(
         max_seq_len=max_seq_len,
         spec=spec,
         dropout=dropout,
+        fix_backend=fix_backend,
     )

@@ -27,6 +27,8 @@ class BenchmarkConfig:
     device: str | None = None
     sample_prompt: str = "the meaning of life"
     max_new_tokens: int = 16
+    fix_backend: str = "auto"
+    mixed_precision: str = "none"
 
     @classmethod
     def default_advanced(cls) -> "BenchmarkConfig":
@@ -74,4 +76,26 @@ class BenchmarkConfig:
             min_freq=1,
             sample_prompt="The meaning of life is",
             max_new_tokens=48,
+        )
+
+    @classmethod
+    def default_cuda_fused(cls) -> "BenchmarkConfig":
+        return cls(
+            preset_name="cuda-fused",
+            tokenizer_name="byte",
+            model_names=["fix"],
+            seq_len=1024,
+            batch_size=4,
+            d_model=128,
+            n_layers=3,
+            n_heads=4,
+            learning_rate=2e-4,
+            eval_interval=25,
+            max_steps=200,
+            max_vocab_size=None,
+            min_freq=1,
+            sample_prompt="The meaning of life is",
+            max_new_tokens=48,
+            fix_backend="fused",
+            mixed_precision="bfloat16",
         )

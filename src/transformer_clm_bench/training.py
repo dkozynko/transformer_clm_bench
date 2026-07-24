@@ -4,6 +4,7 @@ import copy
 import math
 import random
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 import torch
@@ -35,6 +36,22 @@ def compute_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
     return F.cross_entropy(logits.reshape(-1, vocab_size), targets.reshape(-1))
 
 
+def resolve_autocast_dtype(requested: str, device: torch.device) -> torch.dtype | None:
+    if requested == "none":
+        return None
+    if requested == "bfloat16" and device.type == "cuda":
+        return torch.bfloat16
+    if requested == "bfloat16":
+        raise ValueError("bfloat16 mixed precision is only supported for CUDA benchmarks.")
+    raise ValueError(f"Unknown mixed precision setting: {requested}")
+
+
+def autocast_context(device: torch.device, dtype: torch.dtype | None):
+    if dtype is None:
+        return nullcontext()
+    return torch.autocast(device_type=device.type, dtype=dtype)
+
+
 @torch.no_grad()
 def evaluate_model(
     model: nn.Module,
@@ -42,6 +59,7 @@ def evaluate_model(
     device: torch.device,
     *,
     max_batches: int | None = None,
+    autocast_dtype: torch.dtype | None = None,
 ) -> dict[str, float]:
     model.eval()
     total_loss = 0.0
@@ -49,8 +67,9 @@ def evaluate_model(
     for batch_idx, (x, y) in enumerate(dataloader, start=1):
         x = x.to(device)
         y = y.to(device)
-        logits = model(x)
-        loss = compute_loss(logits, y)
+        with autocast_context(device, autocast_dtype):
+            logits = model(x)
+            loss = compute_loss(logits, y)
         total_loss += loss.item()
         total_batches += 1
         if max_batches is not None and batch_idx >= max_batches:
@@ -69,6 +88,7 @@ def train_model(
     weight_decay: float,
     max_steps: int,
     eval_interval: int,
+    autocast_dtype: torch.dtype | None = None,
 ) -> TrainResult:
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     model.to(device)
@@ -89,15 +109,16 @@ def train_model(
         y = y.to(device)
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        logits = model(x)
-        loss = compute_loss(logits, y)
+        with autocast_context(device, autocast_dtype):
+            logits = model(x)
+            loss = compute_loss(logits, y)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         tokens_seen += x.numel()
 
         if step % eval_interval == 0 or step == max_steps:
-            valid_metrics = evaluate_model(model, valid_loader, device)
+            valid_metrics = evaluate_model(model, valid_loader, device, autocast_dtype=autocast_dtype)
             if valid_metrics["loss"] < best_validation_loss:
                 best_validation_loss = valid_metrics["loss"]
                 best_state = copy.deepcopy(model.state_dict())

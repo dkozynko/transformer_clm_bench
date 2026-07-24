@@ -13,6 +13,12 @@ dependencies = [
     "tqdm",
 ]
 
+[project.optional-dependencies]
+fix-cuda = [
+    "flash-linear-attention @ git+https://github.com/AlayaDB-AI/FiX.git@e761e25ff9feb95f8a10882950a950a880884c8c",
+]
+test = ["pytest"]
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
