@@ -1,0 +1,41 @@
+{
+  "config": {
+    "preset_name": "cuda-fused",
+    "tokenizer_name": "byte",
+    "model_names": [
+      "fix"
+    ],
+    "data_dir": ".cache/wikitext-2",
+    "output_dir": "results",
+    "seq_len": 1024,
+    "batch_size": 4,
+    "d_model": 128,
+    "n_layers": 3,
+    "n_heads": 4,
+    "dropout": 0.0,
+    "learning_rate": 0.0002,
+    "weight_decay": 0.01,
+    "eval_interval": 25,
+    "max_steps": 200,
+    "max_vocab_size": null,
+    "min_freq": 1,
+    "seed": 2026,
+    "device": "cuda",
+    "sample_prompt": "The meaning of life is",
+    "max_new_tokens": 48,
+    "fix_backend": "fused",
+    "mixed_precision": "bfloat16"
+  },
+  "vocab_size": 259,
+  "models": [
+    {
+      "name": "fix",
+      "parameters": 863344,
+      "validation_perplexity": 9.562961152918108,
+      "test_perplexity": 9.435676445190591,
+      "tokens_per_second": 6836.527231790162,
+      "steps_ran": 200,
+      "sample": "The meaning of life is"
+    }
+  ]
+}

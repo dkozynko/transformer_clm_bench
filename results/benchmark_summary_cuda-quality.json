@@ -1,0 +1,243 @@
+{
+  "config": {
+    "preset_name": "cuda-quality",
+    "tokenizer_name": "byte",
+    "model_names": [
+      "vanilla",
+      "llama",
+      "differential",
+      "fix"
+    ],
+    "data_dir": ".cache/wikitext-2",
+    "output_dir": "results",
+    "seq_len": 1024,
+    "batch_size": 4,
+    "d_model": 128,
+    "n_layers": 3,
+    "n_heads": 4,
+    "dropout": 0.0,
+    "learning_rate": 0.0002,
+    "weight_decay": 0.01,
+    "eval_interval": 100,
+    "max_steps": 500,
+    "max_vocab_size": null,
+    "min_freq": 1,
+    "seed": 2026,
+    "device": "cuda",
+    "sample_prompt": "The meaning of life is",
+    "max_new_tokens": 48,
+    "fix_backend": "fused",
+    "attention_backend": "sdpa-flash",
+    "mixed_precision": "bfloat16",
+    "timing_warmup_steps": 20,
+    "model_layers": {
+      "vanilla": 4
+    },
+    "seeds": [
+      2026,
+      2027,
+      2028
+    ],
+    "differential_learning_rate_multiplier": 1.0
+  },
+  "vocab_size": 259,
+  "seeds": [
+    2026,
+    2027,
+    2028
+  ],
+  "models": [
+    {
+      "name": "vanilla",
+      "parameters": 957568,
+      "n_layers": 4,
+      "attention_backend": "sdpa-flash",
+      "steps_ran": 500,
+      "runs": [
+        {
+          "name": "vanilla",
+          "parameters": 957568,
+          "n_layers": 4,
+          "attention_backend": "sdpa-flash",
+          "validation_perplexity": 10.908757701941834,
+          "test_perplexity": 10.76375071703421,
+          "tokens_per_second": 388169.51080629515,
+          "steps_ran": 500,
+          "sample": "The meaning of life is"
+        },
+        {
+          "name": "vanilla",
+          "parameters": 957568,
+          "n_layers": 4,
+          "attention_backend": "sdpa-flash",
+          "validation_perplexity": 10.977084000217246,
+          "test_perplexity": 10.837612470479396,
+          "tokens_per_second": 309565.9349147187,
+          "steps_ran": 500,
+          "sample": "The meaning of life is"
+        },
+        {
+          "name": "vanilla",
+          "parameters": 957568,
+          "n_layers": 4,
+          "attention_backend": "sdpa-flash",
+          "validation_perplexity": 10.951545902362069,
+          "test_perplexity": 10.814266425928768,
+          "tokens_per_second": 300903.6166133896,
+          "steps_ran": 500,
+          "sample": "The meaning of life is"
+        }
+      ],
+      "validation_perplexity_mean": 10.945795868173716,
+      "validation_perplexity_std": 0.03452416441973025,
+      "test_perplexity_mean": 10.80520987114746,
+      "test_perplexity_std": 0.03775454335413845,
+      "tokens_per_second_mean": 332879.68744480115,
+      "tokens_per_second_std": 48077.87812598734
+    },
+    {
+      "name": "llama",
+      "parameters": 825472,
+      "n_layers": 3,
+      "attention_backend": "sdpa-flash",
+      "steps_ran": 500,
+      "runs": [
+        {
+          "name": "llama",
+          "parameters": 825472,
+          "n_layers": 3,
+          "attention_backend": "sdpa-flash",
+          "validation_perplexity": 6.347552841599467,
+          "test_perplexity": 6.262938721870107,
+          "tokens_per_second": 337692.1295323785,
+          "steps_ran": 500,
+          "sample": "The meaning of life is"
+        },
+        {
+          "name": "llama",
+          "parameters": 825472,
+          "n_layers": 3,
+          "attention_backend": "sdpa-flash",
+          "validation_perplexity": 6.339471053163066,
+          "test_perplexity": 6.275173708334004,
+          "tokens_per_second": 342126.9555472628,
+          "steps_ran": 500,
+          "sample": "The meaning of life is"
+        },
+        {
+          "name": "llama",
+          "parameters": 825472,
+          "n_layers": 3,
+          "attention_backend": "sdpa-flash",
+          "validation_perplexity": 6.4349783241855985,
+          "test_perplexity": 6.3738724771835145,
+          "tokens_per_second": 397859.9756791495,
+          "steps_ran": 500,
+          "sample": "The meaning of life is"
+        }
+      ],
+      "validation_perplexity_mean": 6.374000739649378,
+      "validation_perplexity_std": 0.05296251682073574,
+      "test_perplexity_mean": 6.303994969129209,
+      "test_perplexity_std": 0.0608241179332068,
+      "tokens_per_second_mean": 359226.35358626366,
+      "tokens_per_second_std": 33531.097319615335
+    },
+    {
+      "name": "differential",
+      "parameters": 926464,
+      "n_layers": 3,
+      "attention_backend": "sdpa-flash",
+      "steps_ran": 500,
+      "runs": [
+        {
+          "name": "differential",
+          "parameters": 926464,
+          "n_layers": 3,
+          "attention_backend": "sdpa-flash",
+          "validation_perplexity": 7.6776035054240435,
+          "test_perplexity": 7.582902825195154,
+          "tokens_per_second": 237235.1837574091,
+          "steps_ran": 500,
+          "sample": "The meaning of life is"
+        },
+        {
+          "name": "differential",
+          "parameters": 926464,
+          "n_layers": 3,
+          "attention_backend": "sdpa-flash",
+          "validation_perplexity": 7.682320512710698,
+          "test_perplexity": 7.604244868555297,
+          "tokens_per_second": 252814.93379365528,
+          "steps_ran": 500,
+          "sample": "The meaning of life is"
+        },
+        {
+          "name": "differential",
+          "parameters": 926464,
+          "n_layers": 3,
+          "attention_backend": "sdpa-flash",
+          "validation_perplexity": 7.701445040754724,
+          "test_perplexity": 7.6284641058597,
+          "tokens_per_second": 255449.65881212876,
+          "steps_ran": 500,
+          "sample": "The meaning of life is"
+        }
+      ],
+      "validation_perplexity_mean": 7.687123019629822,
+      "validation_perplexity_std": 0.012625480436886083,
+      "test_perplexity_mean": 7.605203933203383,
+      "test_perplexity_std": 0.02279577653201994,
+      "tokens_per_second_mean": 248499.92545439771,
+      "tokens_per_second_std": 9844.097119880924
+    },
+    {
+      "name": "fix",
+      "parameters": 863344,
+      "n_layers": 3,
+      "attention_backend": "fla-fused",
+      "steps_ran": 500,
+      "runs": [
+        {
+          "name": "fix",
+          "parameters": 863344,
+          "n_layers": 3,
+          "attention_backend": "fla-fused",
+          "validation_perplexity": 6.628408555151565,
+          "test_perplexity": 6.553088820566235,
+          "tokens_per_second": 229005.47087132346,
+          "steps_ran": 500,
+          "sample": "The meaning of life is"
+        },
+        {
+          "name": "fix",
+          "parameters": 863344,
+          "n_layers": 3,
+          "attention_backend": "fla-fused",
+          "validation_perplexity": 6.718914863818457,
+          "test_perplexity": 6.652550411477609,
+          "tokens_per_second": 229849.21620095757,
+          "steps_ran": 500,
+          "sample": "The meaning of life is"
+        },
+        {
+          "name": "fix",
+          "parameters": 863344,
+          "n_layers": 3,
+          "attention_backend": "fla-fused",
+          "validation_perplexity": 6.66046304146449,
+          "test_perplexity": 6.593127452317335,
+          "tokens_per_second": 254580.53602130164,
+          "steps_ran": 500,
+          "sample": "The meaning of life is"
+        }
+      ],
+      "validation_perplexity_mean": 6.6692621534781695,
+      "validation_perplexity_std": 0.04589026319709486,
+      "test_perplexity_mean": 6.59958889478706,
+      "test_perplexity_std": 0.050044627041746906,
+      "tokens_per_second_mean": 237811.74103119422,
+      "tokens_per_second_std": 14528.328899447057
+    }
+  ]
+}

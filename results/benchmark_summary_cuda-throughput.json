@@ -1,0 +1,84 @@
+{
+  "config": {
+    "preset_name": "cuda-throughput",
+    "tokenizer_name": "byte",
+    "model_names": [
+      "vanilla",
+      "llama",
+      "differential",
+      "fix"
+    ],
+    "data_dir": ".cache/wikitext-2",
+    "output_dir": "results",
+    "seq_len": 1024,
+    "batch_size": 4,
+    "d_model": 128,
+    "n_layers": 3,
+    "n_heads": 4,
+    "dropout": 0.0,
+    "learning_rate": 0.0002,
+    "weight_decay": 0.01,
+    "eval_interval": 100,
+    "max_steps": 200,
+    "max_vocab_size": null,
+    "min_freq": 1,
+    "seed": 2026,
+    "device": "cuda",
+    "sample_prompt": "The meaning of life is",
+    "max_new_tokens": 48,
+    "fix_backend": "fused",
+    "attention_backend": "sdpa-flash",
+    "mixed_precision": "bfloat16",
+    "timing_warmup_steps": 20,
+    "model_layers": {},
+    "seeds": [],
+    "differential_learning_rate_multiplier": 1.0
+  },
+  "vocab_size": 259,
+  "models": [
+    {
+      "name": "vanilla",
+      "parameters": 759296,
+      "n_layers": 3,
+      "attention_backend": "sdpa-flash",
+      "validation_perplexity": 12.515652257543442,
+      "test_perplexity": 12.409628959288987,
+      "tokens_per_second": 342791.825419544,
+      "steps_ran": 200,
+      "sample": "The meaning of life is"
+    },
+    {
+      "name": "llama",
+      "parameters": 825472,
+      "n_layers": 3,
+      "attention_backend": "sdpa-flash",
+      "validation_perplexity": 10.13393570212361,
+      "test_perplexity": 10.019551068696357,
+      "tokens_per_second": 227768.15520641228,
+      "steps_ran": 200,
+      "sample": "The meaning of life is"
+    },
+    {
+      "name": "differential",
+      "parameters": 926464,
+      "n_layers": 3,
+      "attention_backend": "sdpa-flash",
+      "validation_perplexity": 11.881143978424978,
+      "test_perplexity": 11.77359479883473,
+      "tokens_per_second": 241747.3427348901,
+      "steps_ran": 200,
+      "sample": "The meaning of life is"
+    },
+    {
+      "name": "fix",
+      "parameters": 863344,
+      "n_layers": 3,
+      "attention_backend": "fla-fused",
+      "validation_perplexity": 9.691037696865898,
+      "test_perplexity": 9.576713189828707,
+      "tokens_per_second": 255460.71592831676,
+      "steps_ran": 200,
+      "sample": "The meaning of life is"
+    }
+  ]
+}
