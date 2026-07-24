@@ -1,17 +1,121 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import math
+import platform
+import subprocess
 from dataclasses import asdict, replace
 from pathlib import Path
-from statistics import fmean, stdev
+from statistics import fmean, median, stdev
 
 import torch
 from torch.utils.data import DataLoader
 
 from .config import BenchmarkConfig
-from .data import LanguageModelingDataset, decode_token_ids, encode_text, load_corpus_bundle
+from .data import LanguageModelingDataset, decode_token_ids, encode_text, ensure_wikitext2_dataset, load_corpus_bundle
 from .modeling import build_model
 from .training import autocast_context, evaluate_model, resolve_autocast_dtype, resolve_device, set_seed, train_model
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def resolve_training_budget(config: BenchmarkConfig, train_loader) -> dict[str, int | float | None]:
+    batches_per_epoch = len(train_loader)
+    if config.train_epochs is None:
+        resolved_steps = config.max_steps
+    else:
+        if config.train_epochs <= 0:
+            raise ValueError("train_epochs must be positive when provided.")
+        resolved_steps = math.ceil(batches_per_epoch * config.train_epochs)
+    if resolved_steps <= config.timing_warmup_steps:
+        raise ValueError("Resolved training steps must exceed timing_warmup_steps.")
+    return {
+        "requested_epochs": config.train_epochs,
+        "batches_per_epoch": batches_per_epoch,
+        "resolved_steps": resolved_steps,
+    }
+
+
+def cyclic_model_orders(model_names: list[str], *, repeats: int) -> list[list[str]]:
+    if not model_names:
+        raise ValueError("At least one model is required for cyclic ordering.")
+    if repeats <= 0:
+        raise ValueError("throughput repeats must be positive.")
+    return [model_names[repeat % len(model_names) :] + model_names[: repeat % len(model_names)] for repeat in range(repeats)]
+
+
+def aggregate_throughput_summaries(seed_summaries: list[dict], *, model_names: list[str]) -> dict:
+    if not seed_summaries:
+        raise ValueError("At least one throughput summary is required for aggregation.")
+    models = []
+    for name in model_names:
+        runs = [next(model for model in summary["models"] if model["name"] == name) for summary in seed_summaries]
+        values = [run["tokens_per_second"] for run in runs]
+        model = {
+            key: runs[0][key]
+            for key in ("name", "parameters", "n_layers", "attention_backend", "comparison_role")
+            if key in runs[0]
+        }
+        model.update(
+            {
+                "runs": runs,
+                "tokens_per_second_mean": fmean(values),
+                "tokens_per_second_std": stdev(values) if len(values) > 1 else 0.0,
+                "tokens_per_second_median": median(values),
+                "tokens_per_second_min": min(values),
+                "tokens_per_second_max": max(values),
+            }
+        )
+        models.append(model)
+    return {"repeats": len(seed_summaries), "models": models}
+
+
+def _run_optional_command(command: list[str], *, cwd: Path) -> str | None:
+    try:
+        completed = subprocess.run(command, cwd=cwd, check=False, capture_output=True, text=True)
+    except OSError:
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip()
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def collect_provenance(data_paths: dict[str, Path], *, repo_dir: Path = PROJECT_ROOT) -> dict:
+    revision = _run_optional_command(["git", "rev-parse", "HEAD"], cwd=repo_dir)
+    status = _run_optional_command(["git", "status", "--porcelain"], cwd=repo_dir)
+    cuda_available = torch.cuda.is_available()
+    cuda: dict[str, object] = {
+        "available": cuda_available,
+        "runtime_version": torch.version.cuda,
+        "matmul_allow_tf32": torch.backends.cuda.matmul.allow_tf32,
+        "cudnn_allow_tf32": torch.backends.cudnn.allow_tf32,
+    }
+    if cuda_available:
+        properties = torch.cuda.get_device_properties(0)
+        cuda.update(
+            {
+                "device_name": properties.name,
+                "compute_capability": f"{properties.major}.{properties.minor}",
+                "total_memory_bytes": properties.total_memory,
+            }
+        )
+    return {
+        "python_version": platform.python_version(),
+        "torch_version": torch.__version__,
+        "git": {"revision": revision, "dirty": None if status is None else bool(status)},
+        "cuda": cuda,
+        "data_sha256": {name: _sha256(path) for name, path in data_paths.items()},
+    }
 
 
 def generate_sample(
@@ -44,6 +148,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict:
     set_seed(config.seed)
     device = resolve_device(config.device)
     autocast_dtype = resolve_autocast_dtype(config.mixed_precision, device)
+    data_paths = ensure_wikitext2_dataset(config.data_dir)
     corpus = load_corpus_bundle(
         config.data_dir,
         tokenizer_name=config.tokenizer_name,
@@ -51,6 +156,8 @@ def run_benchmark(config: BenchmarkConfig) -> dict:
         max_vocab_size=config.max_vocab_size,
     )
     train_dataset = LanguageModelingDataset(corpus.train_ids, config.seq_len)
+    budget_loader = DataLoader(train_dataset, batch_size=config.batch_size)
+    training_budget = resolve_training_budget(config, budget_loader)
     valid_loader = DataLoader(LanguageModelingDataset(corpus.valid_ids, config.seq_len), batch_size=config.batch_size)
     test_loader = DataLoader(LanguageModelingDataset(corpus.test_ids, config.seq_len), batch_size=config.batch_size)
 
@@ -60,6 +167,8 @@ def run_benchmark(config: BenchmarkConfig) -> dict:
             "device": str(device),
         },
         "vocab_size": corpus.vocab_size,
+        "training_budget": training_budget,
+        "provenance": collect_provenance(data_paths),
         "models": [],
     }
 
@@ -93,7 +202,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict:
             device=device,
             learning_rate=lr,
             weight_decay=config.weight_decay,
-            max_steps=config.max_steps,
+            max_steps=training_budget["resolved_steps"],
             eval_interval=config.eval_interval,
             autocast_dtype=autocast_dtype,
             timing_warmup_steps=config.timing_warmup_steps,
@@ -108,19 +217,23 @@ def run_benchmark(config: BenchmarkConfig) -> dict:
             max_new_tokens=config.max_new_tokens,
             autocast_dtype=autocast_dtype,
         )
-        summary["models"].append(
-            {
-                "name": model_name,
-                "parameters": sum(param.numel() for param in model.parameters()),
-                "n_layers": config.layers_for(model_name),
-                "attention_backend": "fla-fused" if model_name == "fix" and config.fix_backend == "fused" else config.attention_backend,
-                "validation_perplexity": train_result.best_validation_perplexity,
-                "test_perplexity": test_metrics["perplexity"],
-                "tokens_per_second": train_result.tokens_per_second,
-                "steps_ran": train_result.steps_ran,
-                "sample": sample,
-            }
-        )
+        model_summary = {
+            "name": model_name,
+            "parameters": sum(param.numel() for param in model.parameters()),
+            "n_layers": config.layers_for(model_name),
+            "attention_backend": "fla-fused" if model_name == "fix" and config.fix_backend == "fused" else config.attention_backend,
+            "validation_perplexity": train_result.best_validation_perplexity,
+            "test_perplexity": test_metrics["perplexity"],
+            "test_tokens": test_metrics["tokens"],
+            "tokens_per_second": train_result.tokens_per_second,
+            "steps_ran": train_result.steps_ran,
+            "training_tokens": train_result.training_tokens,
+            "timed_tokens": train_result.timed_tokens,
+            "sample": sample,
+        }
+        if config.preset_name.endswith("-v2"):
+            model_summary["comparison_role"] = "scaffold_baseline" if model_name == "vanilla" else "controlled_attention"
+        summary["models"].append(model_summary)
     return summary
 
 
@@ -141,7 +254,17 @@ def aggregate_seed_summaries(seed_summaries: list[dict]) -> dict:
         runs = [next(model for model in summary["models"] if model["name"] == name) for summary in seed_summaries]
         model = {
             key: reference_model[key]
-            for key in ("name", "parameters", "n_layers", "attention_backend", "steps_ran")
+            for key in (
+                "name",
+                "parameters",
+                "n_layers",
+                "attention_backend",
+                "steps_ran",
+                "comparison_role",
+                "training_tokens",
+                "timed_tokens",
+                "test_tokens",
+            )
             if key in reference_model
         }
         model["runs"] = runs
@@ -166,6 +289,34 @@ def run_seeded_benchmark(config: BenchmarkConfig) -> dict:
     return aggregate
 
 
+def run_repeated_throughput_benchmark(config: BenchmarkConfig) -> dict:
+    if config.throughput_repeats <= 0:
+        raise ValueError("throughput_repeats must be positive.")
+    orders = cyclic_model_orders(config.model_names, repeats=config.throughput_repeats)
+    repeat_summaries = []
+    for repeat_index, order in enumerate(orders):
+        summary = run_benchmark(replace(config, model_names=order, seeds=[]))
+        summary["repeat_index"] = repeat_index
+        summary["model_order"] = order
+        repeat_summaries.append(summary)
+
+    aggregate = aggregate_throughput_summaries(repeat_summaries, model_names=config.model_names)
+    for model in aggregate["models"]:
+        for run, summary in zip(model["runs"], repeat_summaries, strict=True):
+            run["repeat_index"] = summary["repeat_index"]
+            run["execution_position"] = summary["model_order"].index(model["name"])
+    reference = repeat_summaries[0]
+    return {
+        "config": {**reference["config"], "model_names": config.model_names},
+        "vocab_size": reference["vocab_size"],
+        "training_budget": reference["training_budget"],
+        "provenance": reference["provenance"],
+        "throughput_repeats": config.throughput_repeats,
+        "repeat_orders": orders,
+        "models": aggregate["models"],
+    }
+
+
 def write_benchmark_report(summary: dict, output_dir: Path) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     config = summary.get("config", {})
@@ -184,13 +335,46 @@ def write_benchmark_report(summary: dict, output_dir: Path) -> dict[str, Path]:
         f"- Mixed precision: `{config['mixed_precision']}`" if "mixed_precision" in config else "- Mixed precision: unknown",
         f"- Attention backend: `{config['attention_backend']}`" if "attention_backend" in config else "- Attention backend: unknown",
         f"- FiX backend: `{config['fix_backend']}`" if "fix_backend" in config else "- FiX backend: unknown",
-        f"- Workload: batch {config['batch_size']}, sequence {config['seq_len']}, {config['max_steps']} steps" if {"batch_size", "seq_len", "max_steps"} <= config.keys() else "- Workload: unknown",
+        f"- Workload: batch {config['batch_size']}, sequence {config['seq_len']}, {summary.get('training_budget', {}).get('resolved_steps', config['max_steps'])} steps" if {"batch_size", "seq_len", "max_steps"} <= config.keys() else "- Workload: unknown",
         f"- Seeds: {', '.join(str(seed) for seed in summary['seeds'])}" if "seeds" in summary else "- Seeds: single run",
-        "",
-        "## Models",
-        "",
     ]
+    training_budget = summary.get("training_budget")
+    if training_budget is not None:
+        lines.append(f"- Resolved training steps: {training_budget['resolved_steps']}")
+        if training_budget["requested_epochs"] is not None:
+            lines.append(f"- Requested training epochs: {training_budget['requested_epochs']}")
+    if "throughput_repeats" in summary:
+        lines.append(f"- Throughput repetitions: {summary['throughput_repeats']}")
+    provenance = summary.get("provenance")
+    if provenance is not None:
+        git = provenance["git"]
+        lines.extend(
+            [
+                f"- Git revision: `{git['revision'] or 'unavailable'}`",
+                f"- Git dirty: `{git['dirty']}`",
+                f"- PyTorch: `{provenance['torch_version']}`",
+                f"- CUDA runtime: `{provenance['cuda']['runtime_version'] or 'unavailable'}`",
+            ]
+        )
+    lines.extend(["", "## Models", ""])
     for model in summary.get("models", []):
+        comparison_role = model.get("comparison_role", "").replace("_", " ")
+        if "tokens_per_second_median" in model:
+            individual_runs = ", ".join(f"{run['tokens_per_second']:.2f}" for run in model["runs"])
+            lines.extend(
+                [
+                    f"### {model['name']}",
+                    f"- Mean training tokens/sec: {model['tokens_per_second_mean']:.2f}",
+                    f"- Sample std training tokens/sec: {model['tokens_per_second_std']:.2f}",
+                    f"- Median training tokens/sec: {model['tokens_per_second_median']:.2f}",
+                    f"- Minimum training tokens/sec: {model['tokens_per_second_min']:.2f}",
+                    f"- Maximum training tokens/sec: {model['tokens_per_second_max']:.2f}",
+                    f"- Individual training tokens/sec: {individual_runs}",
+                    f"- Comparison role: {comparison_role}" if comparison_role else "- Comparison role: n/a",
+                    "",
+                ]
+            )
+            continue
         if "runs" in model:
             lines.extend(
                 [
@@ -201,6 +385,7 @@ def write_benchmark_report(summary: dict, output_dir: Path) -> dict[str, Path]:
                     f"- Parameters: {model['parameters']}" if "parameters" in model else "- Parameters: n/a",
                     f"- Layers: {model['n_layers']}" if "n_layers" in model else "- Layers: n/a",
                     f"- Attention backend: `{model['attention_backend']}`" if "attention_backend" in model else "- Attention backend: n/a",
+                    f"- Comparison role: {comparison_role}" if comparison_role else "- Comparison role: n/a",
                     "",
                 ]
             )
@@ -216,6 +401,7 @@ def write_benchmark_report(summary: dict, output_dir: Path) -> dict[str, Path]:
                 f"- Validation perplexity: {validation_perplexity:.4f}" if validation_perplexity is not None else "- Validation perplexity: n/a",
                 f"- Parameters: {parameters}" if parameters is not None else "- Parameters: n/a",
                 f"- Tokens/sec: {tokens_per_second:.2f}" if tokens_per_second is not None else "- Tokens/sec: n/a",
+                f"- Comparison role: {comparison_role}" if comparison_role else "- Comparison role: n/a",
                 f"- Sample: `{sample}`" if sample else "- Sample: n/a",
                 "",
             ]

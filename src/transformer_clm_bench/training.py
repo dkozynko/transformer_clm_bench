@@ -18,6 +18,8 @@ class TrainResult:
     best_validation_perplexity: float
     steps_ran: int
     tokens_per_second: float
+    training_tokens: int
+    timed_tokens: int
 
 
 def set_seed(seed: int) -> None:
@@ -68,19 +70,20 @@ def evaluate_model(
 ) -> dict[str, float]:
     model.eval()
     total_loss = 0.0
-    total_batches = 0
+    total_tokens = 0
     for batch_idx, (x, y) in enumerate(dataloader, start=1):
         x = x.to(device)
         y = y.to(device)
         with autocast_context(device, autocast_dtype):
             logits = model(x)
             loss = compute_loss(logits, y)
-        total_loss += loss.item()
-        total_batches += 1
+        token_count = y.numel()
+        total_loss += loss.item() * token_count
+        total_tokens += token_count
         if max_batches is not None and batch_idx >= max_batches:
             break
-    avg_loss = total_loss / max(total_batches, 1)
-    return {"loss": avg_loss, "perplexity": math.exp(min(avg_loss, 20))}
+    avg_loss = total_loss / max(total_tokens, 1)
+    return {"loss": avg_loss, "perplexity": math.exp(min(avg_loss, 20)), "tokens": total_tokens}
 
 
 def train_model(
@@ -104,6 +107,7 @@ def train_model(
     best_validation_loss = float("inf")
     best_state = copy.deepcopy(model.state_dict())
     train_iterator = iter(train_loader)
+    training_tokens_seen = 0
     timed_tokens_seen = 0
     timed_elapsed = 0.0
     timing_started_at: float | None = None
@@ -117,6 +121,7 @@ def train_model(
 
         x = x.to(device)
         y = y.to(device)
+        training_tokens_seen += x.numel()
         if step > timing_warmup_steps and timing_started_at is None:
             synchronize_device(device)
             timing_started_at = time.perf_counter()
@@ -151,4 +156,6 @@ def train_model(
         best_validation_perplexity=math.exp(min(best_validation_loss, 20)),
         steps_ran=max_steps,
         tokens_per_second=timed_tokens_seen / elapsed,
+        training_tokens=training_tokens_seen,
+        timed_tokens=timed_tokens_seen,
     )

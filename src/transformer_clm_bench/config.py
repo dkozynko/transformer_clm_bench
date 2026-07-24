@@ -34,6 +34,8 @@ class BenchmarkConfig:
     model_layers: dict[str, int] = field(default_factory=dict)
     seeds: list[int] = field(default_factory=list)
     differential_learning_rate_multiplier: float = 2.0
+    train_epochs: float | None = None
+    throughput_repeats: int = 1
 
     def layers_for(self, model_name: str) -> int:
         return self.model_layers.get(model_name, self.n_layers)
@@ -160,4 +162,60 @@ class BenchmarkConfig:
             model_layers={"vanilla": 4},
             seeds=[2026, 2027, 2028],
             differential_learning_rate_multiplier=1.0,
+        )
+
+    @classmethod
+    def default_cuda_quality_v2(cls) -> "BenchmarkConfig":
+        return cls(
+            preset_name="cuda-quality-v2",
+            tokenizer_name="byte",
+            model_names=["vanilla", "llama", "differential", "fix"],
+            seq_len=1024,
+            batch_size=4,
+            d_model=128,
+            n_layers=3,
+            n_heads=4,
+            learning_rate=2e-4,
+            weight_decay=0.01,
+            eval_interval=500,
+            max_steps=0,
+            max_vocab_size=None,
+            min_freq=1,
+            sample_prompt="The meaning of life is",
+            max_new_tokens=48,
+            fix_backend="fused",
+            attention_backend="sdpa-flash",
+            mixed_precision="bfloat16",
+            timing_warmup_steps=20,
+            model_layers={"vanilla": 4},
+            seeds=[2026, 2027, 2028],
+            differential_learning_rate_multiplier=1.0,
+            train_epochs=1,
+        )
+
+    @classmethod
+    def default_cuda_throughput_v2(cls) -> "BenchmarkConfig":
+        return cls(
+            preset_name="cuda-throughput-v2",
+            tokenizer_name="byte",
+            model_names=["vanilla", "llama", "differential", "fix"],
+            seq_len=1024,
+            batch_size=4,
+            d_model=128,
+            n_layers=3,
+            n_heads=4,
+            learning_rate=2e-4,
+            weight_decay=0.01,
+            eval_interval=500,
+            max_steps=500,
+            max_vocab_size=None,
+            min_freq=1,
+            sample_prompt="The meaning of life is",
+            max_new_tokens=48,
+            fix_backend="fused",
+            attention_backend="sdpa-flash",
+            mixed_precision="bfloat16",
+            timing_warmup_steps=50,
+            differential_learning_rate_multiplier=1.0,
+            throughput_repeats=5,
         )

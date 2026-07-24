@@ -99,11 +99,17 @@ The CUDA profiles compare FiX with hardware-accelerated baselines rather than wi
 ```bash
 uv run python scripts/run_benchmark.py --preset cuda-throughput --device cuda
 uv run python scripts/run_benchmark.py --preset cuda-quality --device cuda
+uv run python scripts/run_benchmark.py --preset cuda-throughput-v2 --device cuda
+uv run python scripts/run_benchmark.py --preset cuda-quality-v2 --device cuda
 ```
 
 `cuda-throughput` is a fixed-shape, single-seed measurement: batch 4, sequence length 1024, 200 training steps, BF16, zero dropout, and 20 excluded warm-up steps. Vanilla, Llama-style, and Differential Transformer use strict PyTorch Flash SDPA; FiX uses the official FLA fused kernel. The timer synchronizes CUDA and excludes evaluation and checkpoint work. It measures execution speed, not quality at equal parameter count.
 
 `cuda-quality` runs 500 training steps for each of three seeds (`2026`, `2027`, `2028`) under the same data, token order, initialization seed, optimizer, precision, sequence length, and batch size. It uses near-parameter-matched model sizes: 957568 parameters for four-layer vanilla, 825472 for three-layer Llama-style, 926464 for three-layer Differential Transformer, and 863344 for three-layer FiX. Its report gives mean plus sample standard deviation for validation/test perplexity and throughput; this is the profile for an accuracy claim at comparable compact scale.
+
+`cuda-quality-v2` is the main compact GPU quality profile. It trains one complete shuffled WikiText-2 byte epoch for every model and each of the three seeds. It records the loader-resolved step and token budgets, token-weighted perplexity, source revision, corpus SHA-256 hashes, PyTorch/CUDA/GPU information, and TF32 settings. Llama-style, Differential, and FiX share the same RoPE/RMSNorm/SwiGLU decoder scaffold and form the controlled attention comparison; vanilla is reported separately as a broader scaffold baseline.
+
+`cuda-throughput-v2` is the main compact GPU performance profile. It runs five BF16 training measurements with cyclic model order, strict Flash SDPA for baseline attention, FiX's fused FLA kernel, CUDA-synchronized timing, and excluded warm-up. It reports individual measurements plus mean, sample standard deviation, median, minimum, and maximum tokens/sec. It does not claim fixed-clock or paper-scale performance.
 
 Outputs:
 
@@ -111,6 +117,10 @@ Outputs:
 - `results/benchmark_report_cuda-throughput.md`
 - `results/benchmark_summary_cuda-quality.json`
 - `results/benchmark_report_cuda-quality.md`
+- `results/benchmark_summary_cuda-throughput-v2.json`
+- `results/benchmark_report_cuda-throughput-v2.md`
+- `results/benchmark_summary_cuda-quality-v2.json`
+- `results/benchmark_report_cuda-quality-v2.md`
 
 ## Running Tests
 
@@ -158,6 +168,7 @@ Outputs:
 - The `meaningful` preset is the benchmark to care about for relative comparison in this repo.
 - The `advanced` preset demonstrates scaling and stability over 3,000 training steps.
 - `cuda-throughput` and `cuda-quality` are separate measurements: do not use the throughput result as an equal-parameter quality comparison.
+- `cuda-quality-v2` and `cuda-throughput-v2` improve experimental controls, but they do not include architecture-specific hyperparameter tuning, long-context retrieval, or fixed GPU-clock control.
 - Differential Transformer uses a dual-attention mechanism with learnable noise cancellation. Recent improvements to the initialization of the $\lambda$ parameter have significantly improved its performance at small scales.
 - FiX uses `fix_backend=auto` by default. It selects the official fused kernel only when CUDA, BF16 autocast, zero attention dropout, supported head dimensions, and the optional dependency are all available; otherwise it uses the reference backend.
 - FiX materializes its feature-wise causal value-decay tensor in the reference backend. Its compact and meaningful throughput is not comparable to the CUDA-fused kernel.
