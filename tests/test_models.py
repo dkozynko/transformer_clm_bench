@@ -44,6 +44,75 @@ def test_differential_model_returns_vocab_logits():
     assert y.shape == (2, 16, 32)
 
 
+@pytest.mark.parametrize("name", ("vanilla", "llama", "differential"))
+def test_zero_dropout_sdpa_matches_reference_attention(name: str):
+    torch.manual_seed(23)
+    reference = build_model(
+        name=name,
+        vocab_size=32,
+        d_model=32,
+        n_layers=2,
+        n_heads=4,
+        max_seq_len=16,
+        dropout=0.0,
+        attention_backend="reference",
+    ).eval()
+    sdpa = build_model(
+        name=name,
+        vocab_size=32,
+        d_model=32,
+        n_layers=2,
+        n_heads=4,
+        max_seq_len=16,
+        dropout=0.0,
+        attention_backend="sdpa",
+    ).eval()
+    sdpa.load_state_dict(reference.state_dict())
+    x = torch.randint(0, 32, (2, 16))
+
+    with torch.no_grad():
+        reference_logits = reference(x)
+        sdpa_logits = sdpa(x)
+
+    torch.testing.assert_close(reference_logits, sdpa_logits, rtol=1e-5, atol=1e-6)
+
+
+def test_differential_sdpa_requires_zero_dropout():
+    with pytest.raises(ValueError, match="zero dropout"):
+        build_model(
+            name="differential",
+            vocab_size=32,
+            d_model=32,
+            n_layers=2,
+            n_heads=4,
+            max_seq_len=16,
+            dropout=0.1,
+            attention_backend="sdpa",
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("name", ("vanilla", "llama", "differential"))
+def test_strict_flash_sdpa_runs_on_cuda(name: str):
+    device = torch.device("cuda")
+    model = build_model(
+        name=name,
+        vocab_size=32,
+        d_model=64,
+        n_layers=2,
+        n_heads=4,
+        max_seq_len=16,
+        dropout=0.0,
+        attention_backend="sdpa-flash",
+    ).to(device)
+    x = torch.randint(0, 32, (2, 16), device=device)
+
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        logits = model(x)
+
+    assert logits.shape == (2, 16, 32)
+
+
 def test_fix_model_returns_vocab_logits():
     x = torch.randint(0, 32, (2, 16))
     model = build_model(

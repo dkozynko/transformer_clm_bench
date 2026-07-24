@@ -1,11 +1,34 @@
 from __future__ import annotations
 
 import math
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
+
+
+ATTENTION_BACKENDS = {"reference", "sdpa", "sdpa-flash"}
+
+
+def scaled_dot_product_attention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    dropout_p: float,
+    backend: str,
+) -> torch.Tensor:
+    if backend == "reference":
+        raise ValueError("Reference attention must use its explicit implementation.")
+    if backend not in ATTENTION_BACKENDS:
+        raise ValueError(f"Attention backend must be one of: {', '.join(sorted(ATTENTION_BACKENDS))}.")
+
+    context = sdpa_kernel(SDPBackend.FLASH_ATTENTION) if backend == "sdpa-flash" else nullcontext()
+    with context:
+        return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, is_causal=True)
 
 
 class RMSNorm(nn.Module):
@@ -74,6 +97,7 @@ class StandardSelfAttention(nn.Module):
         dropout: float = 0.0,
         layer_idx: int = 0,
         vocab_size: int | None = None,
+        backend: str = "reference",
     ) -> None:
         super().__init__()
         if d_model % n_heads != 0:
@@ -81,6 +105,9 @@ class StandardSelfAttention(nn.Module):
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
         self.use_rope = use_rope
+        if backend not in ATTENTION_BACKENDS:
+            raise ValueError(f"Attention backend must be one of: {', '.join(sorted(ATTENTION_BACKENDS))}.")
+        self.backend = backend
         self.qkv_proj = nn.Linear(d_model, 3 * d_model)
         self.out_proj = nn.Linear(d_model, d_model)
         self.attn_dropout = nn.Dropout(dropout)
@@ -97,12 +124,20 @@ class StandardSelfAttention(nn.Module):
             q = apply_rope(q, cos, sin)
             k = apply_rope(k, cos, sin)
 
-        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool), diagonal=1)
-        scores = scores.masked_fill(causal_mask, torch.finfo(scores.dtype).min)
-        attn = torch.softmax(scores, dim=-1)
-        attn = self.attn_dropout(attn)
-        out = torch.matmul(attn, v)
+        if self.backend == "reference":
+            scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+            causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool), diagonal=1)
+            scores = scores.masked_fill(causal_mask, torch.finfo(scores.dtype).min)
+            attn = self.attn_dropout(torch.softmax(scores, dim=-1))
+            out = torch.matmul(attn, v)
+        else:
+            out = scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                dropout_p=self.attn_dropout.p if self.training else 0.0,
+                backend=self.backend,
+            )
         out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, d_model)
         return self.resid_dropout(self.out_proj(out))
 
@@ -117,6 +152,7 @@ class DifferentialSelfAttention(nn.Module):
         dropout: float = 0.0,
         layer_idx: int = 0,
         vocab_size: int | None = None,
+        backend: str = "reference",
     ) -> None:
         super().__init__()
         if d_model % n_heads != 0:
@@ -124,6 +160,11 @@ class DifferentialSelfAttention(nn.Module):
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
         self.use_rope = use_rope
+        if backend not in ATTENTION_BACKENDS:
+            raise ValueError(f"Attention backend must be one of: {', '.join(sorted(ATTENTION_BACKENDS))}.")
+        if backend != "reference" and dropout != 0.0:
+            raise ValueError("Differential SDPA requires zero dropout for equivalent attention semantics.")
+        self.backend = backend
         self.lambda_init = 0.8 - 0.6 * math.exp(-0.3 * layer_idx)
         self.q_proj = nn.Linear(d_model, 2 * d_model)
         self.k_proj = nn.Linear(d_model, 2 * d_model)
@@ -158,16 +199,21 @@ class DifferentialSelfAttention(nn.Module):
             k1 = apply_rope(k1, cos, sin)
             k2 = apply_rope(k2, cos, sin)
 
-        scores_1 = torch.matmul(q1, k1.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        scores_2 = torch.matmul(q2, k2.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool), diagonal=1)
-        scores_1 = scores_1.masked_fill(causal_mask, torch.finfo(scores_1.dtype).min)
-        scores_2 = scores_2.masked_fill(causal_mask, torch.finfo(scores_2.dtype).min)
-        attn_1 = torch.softmax(scores_1, dim=-1)
-        attn_2 = torch.softmax(scores_2, dim=-1)
-        lambdas = self._lambda().view(1, self.n_heads, 1, 1).to(dtype=attn_1.dtype, device=x.device)
-        attn = self.attn_dropout(attn_1 - lambdas * attn_2)
-        out = torch.matmul(attn, v)
+        if self.backend == "reference":
+            scores_1 = torch.matmul(q1, k1.transpose(-2, -1)) / math.sqrt(self.head_dim)
+            scores_2 = torch.matmul(q2, k2.transpose(-2, -1)) / math.sqrt(self.head_dim)
+            causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool), diagonal=1)
+            scores_1 = scores_1.masked_fill(causal_mask, torch.finfo(scores_1.dtype).min)
+            scores_2 = scores_2.masked_fill(causal_mask, torch.finfo(scores_2.dtype).min)
+            attn_1 = torch.softmax(scores_1, dim=-1)
+            attn_2 = torch.softmax(scores_2, dim=-1)
+            lambdas = self._lambda().view(1, self.n_heads, 1, 1).to(dtype=attn_1.dtype, device=x.device)
+            out = torch.matmul(self.attn_dropout(attn_1 - lambdas * attn_2), v)
+        else:
+            out_1 = scaled_dot_product_attention(q1, k1, v, dropout_p=0.0, backend=self.backend)
+            out_2 = scaled_dot_product_attention(q2, k2, v, dropout_p=0.0, backend=self.backend)
+            lambdas = self._lambda().view(1, self.n_heads, 1, 1).to(dtype=out_1.dtype, device=x.device)
+            out = out_1 - lambdas * out_2
         # Sub-layer norm (RMSNorm style but per-head)
         rms = out.pow(2).mean(dim=-1, keepdim=True)
         out = out * torch.rsqrt(rms + self.eps)
@@ -369,6 +415,7 @@ class TransformerBlock(nn.Module):
         layer_idx: int = 0,
         vocab_size: int | None = None,
         fix_backend: str = "auto",
+        attention_backend: str = "reference",
     ) -> None:
         super().__init__()
         hidden_dim = 4 * d_model
@@ -381,6 +428,8 @@ class TransformerBlock(nn.Module):
         }
         if attention_cls is FiXSelfAttention:
             attention_kwargs["backend"] = fix_backend
+        else:
+            attention_kwargs["backend"] = attention_backend
         self.attn = attention_cls(
             d_model,
             n_heads,
@@ -448,6 +497,7 @@ class TransformerLM(nn.Module):
         spec: ModelSpec,
         dropout: float = 0.0,
         fix_backend: str = "auto",
+        attention_backend: str = "reference",
     ) -> None:
         super().__init__()
         self.max_seq_len = max_seq_len
@@ -467,6 +517,7 @@ class TransformerLM(nn.Module):
                     layer_idx=layer_idx,
                     vocab_size=vocab_size,
                     fix_backend=fix_backend,
+                    attention_backend=attention_backend,
                 )
                 for layer_idx in range(n_layers)
             ]
@@ -511,6 +562,7 @@ def build_model(
     max_seq_len: int,
     dropout: float = 0.0,
     fix_backend: str = "auto",
+    attention_backend: str = "reference",
 ) -> nn.Module:
     try:
         spec = MODEL_SPECS[name]
@@ -525,4 +577,5 @@ def build_model(
         spec=spec,
         dropout=dropout,
         fix_backend=fix_backend,
+        attention_backend=attention_backend,
     )

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
+from statistics import fmean, stdev
 
 import torch
 from torch.utils.data import DataLoader
@@ -49,11 +50,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict:
         min_freq=config.min_freq,
         max_vocab_size=config.max_vocab_size,
     )
-    train_loader = DataLoader(
-        LanguageModelingDataset(corpus.train_ids, config.seq_len),
-        batch_size=config.batch_size,
-        shuffle=True,
-    )
+    train_dataset = LanguageModelingDataset(corpus.train_ids, config.seq_len)
     valid_loader = DataLoader(LanguageModelingDataset(corpus.valid_ids, config.seq_len), batch_size=config.batch_size)
     test_loader = DataLoader(LanguageModelingDataset(corpus.test_ids, config.seq_len), batch_size=config.batch_size)
 
@@ -67,21 +64,27 @@ def run_benchmark(config: BenchmarkConfig) -> dict:
     }
 
     for model_name in config.model_names:
-        lr = config.learning_rate
-        # Differential attention often benefits from a slightly higher learning rate 
-        # to overcome its noise-canceling complexity in early training.
-        if model_name == "differential":
-            lr *= 2.0
-            
+        # Reuse the same initialization and shuffled-token order for every architecture in a seed.
+        set_seed(config.seed)
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=config.batch_size,
+            shuffle=True,
+            generator=torch.Generator().manual_seed(config.seed),
+        )
+        lr = config.learning_rate * (
+            config.differential_learning_rate_multiplier if model_name == "differential" else 1.0
+        )
         model = build_model(
             name=model_name,
             vocab_size=corpus.vocab_size,
             d_model=config.d_model,
-            n_layers=config.n_layers,
+            n_layers=config.layers_for(model_name),
             n_heads=config.n_heads,
             max_seq_len=config.seq_len,
             dropout=config.dropout,
             fix_backend=config.fix_backend,
+            attention_backend=config.attention_backend,
         )
         train_result = train_model(
             model,
@@ -93,6 +96,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict:
             max_steps=config.max_steps,
             eval_interval=config.eval_interval,
             autocast_dtype=autocast_dtype,
+            timing_warmup_steps=config.timing_warmup_steps,
         )
         test_metrics = evaluate_model(model, test_loader, device, autocast_dtype=autocast_dtype)
         sample = generate_sample(
@@ -108,6 +112,8 @@ def run_benchmark(config: BenchmarkConfig) -> dict:
             {
                 "name": model_name,
                 "parameters": sum(param.numel() for param in model.parameters()),
+                "n_layers": config.layers_for(model_name),
+                "attention_backend": "fla-fused" if model_name == "fix" and config.fix_backend == "fused" else config.attention_backend,
                 "validation_perplexity": train_result.best_validation_perplexity,
                 "test_perplexity": test_metrics["perplexity"],
                 "tokens_per_second": train_result.tokens_per_second,
@@ -116,6 +122,48 @@ def run_benchmark(config: BenchmarkConfig) -> dict:
             }
         )
     return summary
+
+
+def aggregate_seed_summaries(seed_summaries: list[dict]) -> dict:
+    if not seed_summaries:
+        raise ValueError("At least one seed summary is required for aggregation.")
+
+    reference = seed_summaries[0]
+    seeds = [summary["config"]["seed"] for summary in seed_summaries]
+    aggregate = {
+        "config": reference["config"],
+        "vocab_size": reference["vocab_size"],
+        "seeds": seeds,
+        "models": [],
+    }
+    for reference_model in reference["models"]:
+        name = reference_model["name"]
+        runs = [next(model for model in summary["models"] if model["name"] == name) for summary in seed_summaries]
+        model = {
+            key: reference_model[key]
+            for key in ("name", "parameters", "n_layers", "attention_backend", "steps_ran")
+            if key in reference_model
+        }
+        model["runs"] = runs
+        for metric in ("validation_perplexity", "test_perplexity", "tokens_per_second"):
+            values = [run[metric] for run in runs]
+            model[f"{metric}_mean"] = fmean(values)
+            model[f"{metric}_std"] = stdev(values) if len(values) > 1 else 0.0
+        aggregate["models"].append(model)
+    return aggregate
+
+
+def run_seeded_benchmark(config: BenchmarkConfig) -> dict:
+    if not config.seeds:
+        return run_benchmark(config)
+
+    seed_summaries = [run_benchmark(replace(config, seed=seed, seeds=[])) for seed in config.seeds]
+    aggregate = aggregate_seed_summaries(seed_summaries)
+    aggregate["config"] = {
+        **aggregate["config"],
+        "seeds": config.seeds,
+    }
+    return aggregate
 
 
 def write_benchmark_report(summary: dict, output_dir: Path) -> dict[str, Path]:
@@ -132,11 +180,31 @@ def write_benchmark_report(summary: dict, output_dir: Path) -> dict[str, Path]:
         "",
         f"- Preset: `{preset_name}`",
         f"- Tokenizer: `{tokenizer_name}`",
+        f"- Device: `{config['device']}`" if "device" in config else "- Device: unknown",
+        f"- Mixed precision: `{config['mixed_precision']}`" if "mixed_precision" in config else "- Mixed precision: unknown",
+        f"- Attention backend: `{config['attention_backend']}`" if "attention_backend" in config else "- Attention backend: unknown",
+        f"- FiX backend: `{config['fix_backend']}`" if "fix_backend" in config else "- FiX backend: unknown",
+        f"- Workload: batch {config['batch_size']}, sequence {config['seq_len']}, {config['max_steps']} steps" if {"batch_size", "seq_len", "max_steps"} <= config.keys() else "- Workload: unknown",
+        f"- Seeds: {', '.join(str(seed) for seed in summary['seeds'])}" if "seeds" in summary else "- Seeds: single run",
         "",
         "## Models",
         "",
     ]
     for model in summary.get("models", []):
+        if "runs" in model:
+            lines.extend(
+                [
+                    f"### {model['name']}",
+                    f"- Test perplexity (mean +/- sample std): {model['test_perplexity_mean']:.4f} +/- {model['test_perplexity_std']:.4f}",
+                    f"- Validation perplexity (mean +/- sample std): {model['validation_perplexity_mean']:.4f} +/- {model['validation_perplexity_std']:.4f}",
+                    f"- Steady-state training tokens/sec (mean +/- sample std): {model['tokens_per_second_mean']:.2f} +/- {model['tokens_per_second_std']:.2f}",
+                    f"- Parameters: {model['parameters']}" if "parameters" in model else "- Parameters: n/a",
+                    f"- Layers: {model['n_layers']}" if "n_layers" in model else "- Layers: n/a",
+                    f"- Attention backend: `{model['attention_backend']}`" if "attention_backend" in model else "- Attention backend: n/a",
+                    "",
+                ]
+            )
+            continue
         validation_perplexity = model.get("validation_perplexity")
         parameters = model.get("parameters")
         tokens_per_second = model.get("tokens_per_second")
